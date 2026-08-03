@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
-import { Application, Graphics } from "pixi.js";
+import { Application, Container, Graphics } from "pixi.js";
 import { loadWorldData, type Geometry, type Position } from "./loadWorldData";
+import { buildCountryEntities, type Entity } from "./entities";
 
 const OCEAN_COLOR = 0x068494;
 const LAND_COLOR = 0xf5f5f2;
@@ -108,6 +109,12 @@ function strokeGeometry(
   }
 }
 
+class CountryContainer extends Container {
+  constructor(public entity: Entity) {
+    super();
+  }
+}
+
 export function MapCanvas() {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -133,6 +140,7 @@ export function MapCanvas() {
         container.appendChild(app.canvas);
 
         const world = loadWorldData();
+        const countryEntities = buildCountryEntities(world.countries);
 
         const draw = () => {
           app.stage.removeChildren();
@@ -144,12 +152,16 @@ export function MapCanvas() {
           }
           app.stage.addChild(land);
 
-          const countries = new Graphics();
-          for (const f of world.countries.features) {
-            fillGeometry(countries, f.geometry, width, height, LAND_COLOR);
-            strokeGeometry(countries, f.geometry, width, height);
+          const countriesLayer = new Container();
+          for (const entity of countryEntities) {
+            const countryContainer = new CountryContainer(entity);
+            const g = new Graphics();
+            fillGeometry(g, entity.geometry, width, height, LAND_COLOR);
+            strokeGeometry(g, entity.geometry, width, height);
+            countryContainer.addChild(g);
+            countriesLayer.addChild(countryContainer);
           }
-          app.stage.addChild(countries);
+          app.stage.addChild(countriesLayer);
         };
 
         draw();
