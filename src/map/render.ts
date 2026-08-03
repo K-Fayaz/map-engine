@@ -1,0 +1,118 @@
+import { Container, Graphics } from "pixi.js";
+import type { Geometry, Position } from "./loadWorldData";
+import type { Entity } from "./entities";
+
+const BORDER_COLOR = 0x4a4a4a;
+
+// Fixed world-space size geometry is projected into, decoupled from actual
+// screen size. Geometry is built once against these constants; pan/zoom is
+// then a cheap Container-level transform on top (see camera.ts /
+// MapCanvas.tsx), not a re-projection. 2:1 ratio matches the projection's
+// natural 360:180 degree range. The exact numbers don't matter -- only that
+// they stay constant.
+export const WORLD_WIDTH = 2000;
+export const WORLD_HEIGHT = 1000;
+
+export function project(lon: number, lat: number): [number, number] {
+  const x = ((lon + 180) / 360) * WORLD_WIDTH;
+  const y = ((90 - lat) / 180) * WORLD_HEIGHT;
+  return [x, y];
+}
+
+function toPolygons(geometry: Geometry) {
+  return geometry.type === "Polygon" ? [geometry.coordinates] : geometry.coordinates;
+}
+
+// A handful of Natural Earth rings (Russia's Chukotka peninsula, Fiji,
+// Antarctica's polar closure edge) have consecutive points that jump from
+// ~+180 to ~-180 longitude. Some of these are real coastline crossing the
+// dateline; others are synthetic edges Natural Earth inserts to seal a
+// polygon shut exactly along the map boundary (Antarctica's flat southern
+// cap, for instance) and aren't reliably distinguishable from real crossings
+// by their coordinates alone. Rather than bridging across the jump (which
+// either draws a stray line across the whole map, or -- if "corrected" --
+// can warp the shape into something spanning the whole map instead), this
+// simply splits the ring into separate pieces at the jump, each closed on
+// its own. The affected pieces close slightly differently than the true
+// coastline right at the seam, but this avoids wrap-around glitches
+// entirely and only touches this small set of dateline-straddling features.
+export function splitAtAntimeridian(ring: Position[]): Position[][] {
+  const pieces: Position[][] = [[]];
+  let prevLon: number | null = null;
+
+  for (const point of ring) {
+    if (prevLon !== null && Math.abs(point[0] - prevLon) > 180) {
+      pieces.push([]);
+    }
+    pieces[pieces.length - 1].push(point);
+    prevLon = point[0];
+  }
+
+  // GeoJSON rings are closed loops: the array's start/end is just wherever
+  // the data happened to begin tracing, not a real geographic break. If the
+  // split above produced more than one piece, the first and last pieces are
+  // actually one continuous piece that got cut apart by that arbitrary
+  // array boundary (this is what caused Russia's mainland to render as a
+  // stray diagonal -- its first and last pieces both dangled from the same
+  // interior point instead of closing locally). Stitching them back together
+  // leaves only the genuine antimeridian crossings as piece boundaries.
+  if (pieces.length > 1) {
+    const first = pieces.shift()!;
+    const last = pieces.pop()!;
+    pieces.push([...last, ...first]);
+  }
+
+  return pieces.filter((piece) => piece.length >= 3);
+}
+
+function projectPoints(points: Position[]): number[] {
+  return points.flatMap(([lon, lat]) => project(lon, lat));
+}
+
+export function fillGeometry(graphics: Graphics, geometry: Geometry, fillColor: number) {
+  for (const rings of toPolygons(geometry)) {
+    rings.forEach((ring, ringIndex) => {
+      for (const piece of splitAtAntimeridian(ring)) {
+        const points = projectPoints(piece);
+        graphics.poly(points, true);
+        if (ringIndex === 0) {
+          graphics.fill(fillColor);
+        } else {
+          graphics.cut();
+        }
+      }
+    });
+  }
+}
+
+// Strokes each ring independently (fill/stroke/cut share underlying path
+// state in Pixi's Graphics API, so borders are drawn as a separate pass
+// rather than chained onto the fill instructions above).
+//
+// `width` is in world-space units, same as the geometry itself -- deliberately
+// NOT using Pixi's `pixelLine` here. pixelLine renders each segment as an
+// independent GPU line primitive with no proper corner joins, so a coastline
+// with many more points per unit length (10m has ~5-6x more points than 50m
+// for the same country) ends up with proportionally more overlapping
+// antialiased joints, which reads as a visibly bolder/thicker line -- purely
+// from point density, independent of any width setting. A regular jointed
+// stroke doesn't have that problem: it looks the same regardless of how many
+// points define the path. The caller (MapCanvas.tsx) is responsible for
+// recomputing `width` from the current zoom and rebuilding when it changes,
+// so the on-screen thickness stays roughly constant as you zoom.
+export function strokeGeometry(graphics: Graphics, geometry: Geometry, width: number) {
+  for (const rings of toPolygons(geometry)) {
+    for (const ring of rings) {
+      for (const piece of splitAtAntimeridian(ring)) {
+        const points = projectPoints(piece);
+        graphics.poly(points, true).stroke({ width, color: BORDER_COLOR });
+      }
+    }
+  }
+}
+
+export class CountryContainer extends Container {
+  constructor(public entity: Entity) {
+    super();
+  }
+}

@@ -1,119 +1,38 @@
 import { useEffect, useRef } from "react";
 import { Application, Container, Graphics } from "pixi.js";
-import { loadWorldData, type Geometry, type Position } from "./loadWorldData";
-import { buildCountryEntities, type Entity } from "./entities";
+import { loadWorldData, type Resolution } from "./loadWorldData";
+import { buildCountryEntities } from "./entities";
+import {
+  fillGeometry,
+  strokeGeometry,
+  CountryContainer,
+  WORLD_WIDTH,
+  WORLD_HEIGHT,
+} from "./render";
+import { type Camera, MIN_ZOOM, clampCamera, zoomAt, lerpCamera } from "./camera";
 
 const OCEAN_COLOR = 0x068494;
 const LAND_COLOR = 0xf5f5f2;
-const BORDER_COLOR = 0x4a4a4a;
 
-function project(
-  lon: number,
-  lat: number,
-  width: number,
-  height: number,
-): [number, number] {
-  const x = ((lon + 180) / 360) * width;
-  const y = ((90 - lat) / 180) * height;
-  return [x, y];
-}
+// How far past the default view (world exactly fills the screen) the user
+// can zoom in. Arbitrary reasonable cap for V1 -- there's no Phase 3
+// city/state detail yet to justify a specific number, revisit once that
+// exists.
+const MAX_ZOOM = 16;
 
-function toPolygons(geometry: Geometry) {
-  return geometry.type === "Polygon" ? [geometry.coordinates] : geometry.coordinates;
-}
+// Fraction of the current->target gap closed per tick (~60fps), giving the
+// eased-zoom feel without full momentum/velocity physics.
+const EASE_FACTOR = 0.2;
 
-// A handful of Natural Earth rings (Russia's Chukotka peninsula, Fiji,
-// Antarctica's polar closure edge) have consecutive points that jump from
-// ~+180 to ~-180 longitude. Some of these are real coastline crossing the
-// dateline; others are synthetic edges Natural Earth inserts to seal a
-// polygon shut exactly along the map boundary (Antarctica's flat southern
-// cap, for instance) and aren't reliably distinguishable from real crossings
-// by their coordinates alone. Rather than bridging across the jump (which
-// either draws a stray line across the whole map, or -- if "corrected" --
-// can warp the shape into something spanning the whole map instead), this
-// simply splits the ring into separate pieces at the jump, each closed on
-// its own. The affected pieces close slightly differently than the true
-// coastline right at the seam, but this avoids wrap-around glitches
-// entirely and only touches this small set of dateline-straddling features.
-function splitAtAntimeridian(ring: Position[]): Position[][] {
-  const pieces: Position[][] = [[]];
-  let prevLon: number | null = null;
+// Tuned by feel: how much a single wheel tick's deltaY changes zoom.
+const WHEEL_ZOOM_SENSITIVITY = 0.0015;
 
-  for (const point of ring) {
-    if (prevLon !== null && Math.abs(point[0] - prevLon) > 180) {
-      pieces.push([]);
-    }
-    pieces[pieces.length - 1].push(point);
-    prevLon = point[0];
-  }
-
-  // GeoJSON rings are closed loops: the array's start/end is just wherever
-  // the data happened to begin tracing, not a real geographic break. If the
-  // split above produced more than one piece, the first and last pieces are
-  // actually one continuous piece that got cut apart by that arbitrary
-  // array boundary (this is what caused Russia's mainland to render as a
-  // stray diagonal -- its first and last pieces both dangled from the same
-  // interior point instead of closing locally). Stitching them back together
-  // leaves only the genuine antimeridian crossings as piece boundaries.
-  if (pieces.length > 1) {
-    const first = pieces.shift()!;
-    const last = pieces.pop()!;
-    pieces.push([...last, ...first]);
-  }
-
-  return pieces.filter((piece) => piece.length >= 3);
-}
-
-function projectPoints(points: Position[], width: number, height: number): number[] {
-  return points.flatMap(([lon, lat]) => project(lon, lat, width, height));
-}
-
-function fillGeometry(
-  graphics: Graphics,
-  geometry: Geometry,
-  width: number,
-  height: number,
-  fillColor: number,
-) {
-  for (const rings of toPolygons(geometry)) {
-    rings.forEach((ring, ringIndex) => {
-      for (const piece of splitAtAntimeridian(ring)) {
-        const points = projectPoints(piece, width, height);
-        graphics.poly(points, true);
-        if (ringIndex === 0) {
-          graphics.fill(fillColor);
-        } else {
-          graphics.cut();
-        }
-      }
-    });
-  }
-}
-
-// Strokes each ring independently (fill/stroke/cut share underlying path
-// state in Pixi's Graphics API, so borders are drawn as a separate pass
-// rather than chained onto the fill instructions above).
-function strokeGeometry(
-  graphics: Graphics,
-  geometry: Geometry,
-  width: number,
-  height: number,
-) {
-  for (const rings of toPolygons(geometry)) {
-    for (const ring of rings) {
-      for (const piece of splitAtAntimeridian(ring)) {
-        const points = projectPoints(piece, width, height);
-        graphics.poly(points, true).stroke({ width: 1, color: BORDER_COLOR });
-      }
-    }
-  }
-}
-
-class CountryContainer extends Container {
-  constructor(public entity: Entity) {
-    super();
-  }
-}
+// Zoom level past which the higher-detail 10m dataset swaps in. Swapping
+// back down to 50m only happens below threshold * LOD_HYSTERESIS, so
+// hovering right at the boundary doesn't repeatedly reload both datasets.
+const LOD_ZOOM_THRESHOLD = 4;
+const LOD_HYSTERESIS = 0.85;
+const LOD_DEBOUNCE_MS = 150;
 
 export function MapCanvas() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -139,33 +58,197 @@ export function MapCanvas() {
 
         container.appendChild(app.canvas);
 
-        const world = loadWorldData();
-        const countryEntities = buildCountryEntities(world.countries);
+        // Base per-axis stretch so the world exactly fills the screen at
+        // zoom = 1 -- matches the original non-uniform "always fills the
+        // window" behavior. Camera x/y/zoom then layers a uniform pan/zoom
+        // transform on top, recomputed on resize.
+        let baseScaleX = app.screen.width / WORLD_WIDTH;
+        let baseScaleY = app.screen.height / WORLD_HEIGHT;
 
-        const draw = () => {
-          app.stage.removeChildren();
-          const { width, height } = app.screen;
+        // Border stroke width in world-space units, recomputed whenever zoom
+        // settles (see scheduleLodCheck) so the on-screen thickness stays
+        // roughly constant regardless of zoom level. Computed ourselves
+        // rather than using Pixi's zoom-invariant `pixelLine` stroke mode --
+        // see render.ts's strokeGeometry for why that turned out to look
+        // inconsistent between 50m and 10m data.
+        const TARGET_BORDER_SCREEN_PX = 1;
+        const computeBorderWidth = (zoom: number) =>
+          TARGET_BORDER_SCREEN_PX / (((baseScaleX + baseScaleY) / 2) * zoom);
+
+        // Geometry is built once per resolution, in fixed world-space (see
+        // render.ts) -- unlike the old draw(), this never re-runs on
+        // resize. Pan/zoom is purely a transform on worldContainer, applied
+        // by the ticker below; only a LOD swap or border-width refresh (see
+        // below) rebuilds this.
+        function buildLayers(resolution: Resolution, borderWidth: number) {
+          const world = loadWorldData(resolution);
+          const countryEntities = buildCountryEntities(world.countries);
 
           const land = new Graphics();
           for (const f of world.land.features) {
-            fillGeometry(land, f.geometry, width, height, LAND_COLOR);
+            fillGeometry(land, f.geometry, LAND_COLOR);
           }
-          app.stage.addChild(land);
 
           const countriesLayer = new Container();
           for (const entity of countryEntities) {
             const countryContainer = new CountryContainer(entity);
             const g = new Graphics();
-            fillGeometry(g, entity.geometry, width, height, LAND_COLOR);
-            strokeGeometry(g, entity.geometry, width, height);
+            fillGeometry(g, entity.geometry, LAND_COLOR);
+            strokeGeometry(g, entity.geometry, borderWidth);
             countryContainer.addChild(g);
             countriesLayer.addChild(countryContainer);
           }
-          app.stage.addChild(countriesLayer);
+
+          return { land, countriesLayer };
+        }
+
+        const worldContainer = new Container();
+        let resolution: Resolution = "50m";
+        let { land, countriesLayer } = buildLayers(resolution, computeBorderWidth(1));
+        worldContainer.addChild(land);
+        worldContainer.addChild(countriesLayer);
+
+        app.stage.addChild(worldContainer);
+
+        // Camera state: current is what's actually rendered each frame,
+        // eased toward target by the ticker. No pan/zoom input is wired up
+        // yet (that's the next todos) -- for now both start at the default
+        // view (zoom = 1, world exactly fills the screen) and stay there.
+        let current: Camera = { x: 0, y: 0, zoom: 1 };
+        let target: Camera = { ...current };
+
+        const onResize = () => {
+          const { width, height } = app.screen;
+          baseScaleX = width / WORLD_WIDTH;
+          baseScaleY = height / WORLD_HEIGHT;
+          current = clampCamera(current, width, height, MAX_ZOOM);
+          target = clampCamera(target, width, height, MAX_ZOOM);
+        };
+        app.renderer.on("resize", onResize);
+
+        // Drag pan: tracks the cursor 1:1 (no easing/momentum, per Phase 2
+        // scope), so both current and target are set directly on move
+        // rather than letting the ticker lerp toward a target. Pointer
+        // capture keeps the drag going even if the cursor leaves the
+        // canvas mid-drag, instead of needing pointerleave handling.
+        const canvas = app.canvas;
+        let dragging = false;
+        let dragStartX = 0;
+        let dragStartY = 0;
+        let dragStartCameraX = 0;
+        let dragStartCameraY = 0;
+
+        const onPointerDown = (e: PointerEvent) => {
+          dragging = true;
+          dragStartX = e.offsetX;
+          dragStartY = e.offsetY;
+          dragStartCameraX = current.x;
+          dragStartCameraY = current.y;
+          canvas.setPointerCapture(e.pointerId);
+          canvas.style.cursor = "grabbing";
         };
 
-        draw();
-        app.renderer.on("resize", draw);
+        const onPointerMove = (e: PointerEvent) => {
+          if (!dragging) return;
+          const { width, height } = app.screen;
+          const next = clampCamera(
+            {
+              x: dragStartCameraX + (e.offsetX - dragStartX),
+              y: dragStartCameraY + (e.offsetY - dragStartY),
+              zoom: current.zoom,
+            },
+            width,
+            height,
+            MAX_ZOOM,
+          );
+          current = next;
+          target = next;
+        };
+
+        const onPointerUp = (e: PointerEvent) => {
+          dragging = false;
+          canvas.releasePointerCapture(e.pointerId);
+          canvas.style.cursor = "grab";
+        };
+
+        canvas.style.cursor = "grab";
+        canvas.addEventListener("pointerdown", onPointerDown);
+        canvas.addEventListener("pointermove", onPointerMove);
+        canvas.addEventListener("pointerup", onPointerUp);
+        canvas.addEventListener("pointercancel", onPointerUp);
+
+        // Rebuilds land/countriesLayer inside the same worldContainer --
+        // the camera transform on worldContainer itself is untouched, so
+        // there's no visual jump. Used both for LOD resolution swaps and
+        // for refreshing border width after zoom settles (see
+        // scheduleLodCheck), so it always rebuilds rather than bailing out
+        // when the resolution itself hasn't changed.
+        const rebuildLayers = (nextResolution: Resolution) => {
+          resolution = nextResolution;
+          const old = { land, countriesLayer };
+          ({ land, countriesLayer } = buildLayers(resolution, computeBorderWidth(current.zoom)));
+          worldContainer.addChild(land);
+          worldContainer.addChild(countriesLayer);
+          old.land.destroy({ children: true });
+          old.countriesLayer.destroy({ children: true });
+        };
+
+        // Debounced off wheel events (panning alone never changes zoom, so
+        // it can't affect either the LOD threshold or border width) so a
+        // continuous scroll only triggers one rebuild after it stops,
+        // rather than one per tick.
+        let lodTimeout: ReturnType<typeof setTimeout> | null = null;
+        const scheduleLodCheck = () => {
+          if (lodTimeout !== null) clearTimeout(lodTimeout);
+          lodTimeout = setTimeout(() => {
+            lodTimeout = null;
+            if (cancelled) return;
+            let nextResolution = resolution;
+            if (resolution === "50m" && current.zoom > LOD_ZOOM_THRESHOLD) {
+              nextResolution = "10m";
+            } else if (
+              resolution === "10m" &&
+              current.zoom < LOD_ZOOM_THRESHOLD * LOD_HYSTERESIS
+            ) {
+              nextResolution = "50m";
+            }
+            rebuildLayers(nextResolution);
+          }, LOD_DEBOUNCE_MS);
+        };
+
+        // Wheel zoom: cursor-anchored, eased (only `target` is set here --
+        // the ticker's lerpCamera above carries `current` toward it). Based
+        // on `target` rather than `current` so repeated fast wheel ticks
+        // compose against the intended zoom level instead of drifting from
+        // whatever the easing hasn't caught up to yet. preventDefault stops
+        // the browser's own page-zoom/scroll; needs { passive: false } for
+        // that to be allowed.
+        const onWheel = (e: WheelEvent) => {
+          e.preventDefault();
+          const { width, height } = app.screen;
+          const zoomFactor = Math.exp(-e.deltaY * WHEEL_ZOOM_SENSITIVITY);
+          // Clamp the requested zoom *before* anchoring, not after: zoomAt
+          // computes x/y assuming the camera ends up at exactly the zoom
+          // value it's given, so anchoring against an unclamped value (which
+          // regularly overshoots MAX_ZOOM near the top of the range) and
+          // only clamping the zoom number afterward leaves x/y anchored for
+          // a different zoom than what's actually applied -- a large,
+          // sudden position jump. Clamping first keeps them in agreement.
+          const requestedZoom = Math.min(
+            MAX_ZOOM,
+            Math.max(MIN_ZOOM, target.zoom * zoomFactor),
+          );
+          const zoomed = zoomAt(target, e.offsetX, e.offsetY, requestedZoom);
+          target = clampCamera(zoomed, width, height, MAX_ZOOM);
+          scheduleLodCheck();
+        };
+        canvas.addEventListener("wheel", onWheel, { passive: false });
+
+        app.ticker.add(() => {
+          current = lerpCamera(current, target, EASE_FACTOR);
+          worldContainer.position.set(current.x, current.y);
+          worldContainer.scale.set(baseScaleX * current.zoom, baseScaleY * current.zoom);
+        });
       });
 
     return () => {
