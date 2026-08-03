@@ -89,30 +89,43 @@ export function fillGeometry(graphics: Graphics, geometry: Geometry, fillColor: 
 // state in Pixi's Graphics API, so borders are drawn as a separate pass
 // rather than chained onto the fill instructions above).
 //
-// `width` is in world-space units, same as the geometry itself -- deliberately
-// NOT using Pixi's `pixelLine` here. pixelLine renders each segment as an
-// independent GPU line primitive with no proper corner joins, so a coastline
-// with many more points per unit length (10m has ~5-6x more points than 50m
-// for the same country) ends up with proportionally more overlapping
-// antialiased joints, which reads as a visibly bolder/thicker line -- purely
-// from point density, independent of any width setting. A regular jointed
-// stroke doesn't have that problem: it looks the same regardless of how many
-// points define the path. The caller (MapCanvas.tsx) is responsible for
-// recomputing `width` from the current zoom and rebuilding when it changes,
-// so the on-screen thickness stays roughly constant as you zoom.
-export function strokeGeometry(graphics: Graphics, geometry: Geometry, width: number) {
+// Uses `pixelLine`: a GPU-native line primitive that always renders ~1
+// device pixel wide, completely independent of the current camera zoom --
+// so unlike a regular stroke, this never needs its width recomputed or its
+// geometry rebuilt as the user zooms. Its one real drawback is that each
+// segment is drawn as an independent primitive with no proper corner joins,
+// so a coastline with many more points per unit length ends up with
+// proportionally more overlapping antialiased joints, reading as a visibly
+// bolder line purely from point density -- independent of any width
+// setting. That's why MapCanvas.tsx always calls this with 50m-resolution
+// geometry for the border, even when the fill underneath it is showing 10m
+// detail: one consistent (and comfortably low) point density, so the
+// border never needs rebuilding for either zoom *or* LOD changes -- it's
+// built once and never touched again.
+export function strokeGeometry(graphics: Graphics, geometry: Geometry) {
   for (const rings of toPolygons(geometry)) {
     for (const ring of rings) {
       for (const piece of splitAtAntimeridian(ring)) {
         const points = projectPoints(piece);
-        graphics.poly(points, true).stroke({ width, color: BORDER_COLOR });
+        graphics.poly(points, true).stroke({ width: 1, color: BORDER_COLOR, pixelLine: true });
       }
     }
   }
 }
 
+// `fill` and `stroke` are separate, persistent children rather than one
+// combined Graphics: LOD swaps only ever need to redraw `fill` (via
+// `.clear()` + refill) to show the new resolution's coastline shape --
+// `stroke` is built once from stable 50m data and never touched again, so
+// keeping them apart means a LOD swap doesn't pay to rebuild borders it
+// isn't changing.
 export class CountryContainer extends Container {
+  fill = new Graphics();
+  stroke = new Graphics();
+
   constructor(public entity: Entity) {
     super();
+    this.addChild(this.fill);
+    this.addChild(this.stroke);
   }
 }

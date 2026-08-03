@@ -65,50 +65,58 @@ export function MapCanvas() {
         let baseScaleX = app.screen.width / WORLD_WIDTH;
         let baseScaleY = app.screen.height / WORLD_HEIGHT;
 
-        // Border stroke width in world-space units, recomputed whenever zoom
-        // settles (see scheduleLodCheck) so the on-screen thickness stays
-        // roughly constant regardless of zoom level. Computed ourselves
-        // rather than using Pixi's zoom-invariant `pixelLine` stroke mode --
-        // see render.ts's strokeGeometry for why that turned out to look
-        // inconsistent between 50m and 10m data.
-        const TARGET_BORDER_SCREEN_PX = 1;
-        const computeBorderWidth = (zoom: number) =>
-          TARGET_BORDER_SCREEN_PX / (((baseScaleX + baseScaleY) / 2) * zoom);
+        // Country containers are built once, from 50m data, and persist for
+        // the lifetime of the map -- both their identity (useful later for
+        // Phase 4 selection, which shouldn't lose its target every time the
+        // LOD resolution changes) and their `stroke` child (pixelLine,
+        // zoom-invariant, and always sourced from this same 50m geometry
+        // regardless of which resolution is currently showing -- see
+        // render.ts's strokeGeometry for why that avoids ever needing a
+        // rebuild). Only `fill` -- on every country, plus `land` -- gets
+        // redrawn when the LOD resolution actually changes.
+        const initialWorld = loadWorldData("50m");
+        const borderEntities = buildCountryEntities(initialWorld.countries);
 
-        // Geometry is built once per resolution, in fixed world-space (see
-        // render.ts) -- unlike the old draw(), this never re-runs on
-        // resize. Pan/zoom is purely a transform on worldContainer, applied
-        // by the ticker below; only a LOD swap or border-width refresh (see
-        // below) rebuilds this.
-        function buildLayers(resolution: Resolution, borderWidth: number) {
-          const world = loadWorldData(resolution);
-          const countryEntities = buildCountryEntities(world.countries);
+        const worldContainer = new Container();
 
-          const land = new Graphics();
+        const land = new Graphics();
+        worldContainer.addChild(land);
+
+        const countriesLayer = new Container();
+        const countryContainers = borderEntities.map((entity) => {
+          const c = new CountryContainer(entity);
+          strokeGeometry(c.stroke, entity.geometry);
+          countriesLayer.addChild(c);
+          return c;
+        });
+        worldContainer.addChild(countriesLayer);
+
+        app.stage.addChild(worldContainer);
+
+        let resolution: Resolution = "50m";
+
+        function applyFill(nextResolution: Resolution) {
+          resolution = nextResolution;
+          const world = resolution === "50m" ? initialWorld : loadWorldData(resolution);
+
+          land.clear();
           for (const f of world.land.features) {
             fillGeometry(land, f.geometry, LAND_COLOR);
           }
 
-          const countriesLayer = new Container();
-          for (const entity of countryEntities) {
-            const countryContainer = new CountryContainer(entity);
-            const g = new Graphics();
-            fillGeometry(g, entity.geometry, LAND_COLOR);
-            strokeGeometry(g, entity.geometry, borderWidth);
-            countryContainer.addChild(g);
-            countriesLayer.addChild(countryContainer);
+          const fillEntities = new Map(
+            (resolution === "50m" ? borderEntities : buildCountryEntities(world.countries)).map(
+              (e) => [e.id, e],
+            ),
+          );
+          for (const c of countryContainers) {
+            const match = fillEntities.get(c.entity.id);
+            c.fill.clear();
+            if (match) fillGeometry(c.fill, match.geometry, LAND_COLOR);
           }
-
-          return { land, countriesLayer };
         }
 
-        const worldContainer = new Container();
-        let resolution: Resolution = "50m";
-        let { land, countriesLayer } = buildLayers(resolution, computeBorderWidth(1));
-        worldContainer.addChild(land);
-        worldContainer.addChild(countriesLayer);
-
-        app.stage.addChild(worldContainer);
+        applyFill("50m");
 
         // Camera state: current is what's actually rendered each frame,
         // eased toward target by the ticker. No pan/zoom input is wired up
@@ -177,42 +185,25 @@ export function MapCanvas() {
         canvas.addEventListener("pointerup", onPointerUp);
         canvas.addEventListener("pointercancel", onPointerUp);
 
-        // Rebuilds land/countriesLayer inside the same worldContainer --
-        // the camera transform on worldContainer itself is untouched, so
-        // there's no visual jump. Used both for LOD resolution swaps and
-        // for refreshing border width after zoom settles (see
-        // scheduleLodCheck), so it always rebuilds rather than bailing out
-        // when the resolution itself hasn't changed.
-        const rebuildLayers = (nextResolution: Resolution) => {
-          resolution = nextResolution;
-          const old = { land, countriesLayer };
-          ({ land, countriesLayer } = buildLayers(resolution, computeBorderWidth(current.zoom)));
-          worldContainer.addChild(land);
-          worldContainer.addChild(countriesLayer);
-          old.land.destroy({ children: true });
-          old.countriesLayer.destroy({ children: true });
-        };
-
         // Debounced off wheel events (panning alone never changes zoom, so
-        // it can't affect either the LOD threshold or border width) so a
-        // continuous scroll only triggers one rebuild after it stops,
-        // rather than one per tick.
+        // it can't cross the LOD threshold) so a continuous scroll only
+        // triggers one fill refresh after it stops, rather than one per
+        // tick. Only actually calls applyFill when the resolution genuinely
+        // needs to change -- borders never need touching here at all.
         let lodTimeout: ReturnType<typeof setTimeout> | null = null;
         const scheduleLodCheck = () => {
           if (lodTimeout !== null) clearTimeout(lodTimeout);
           lodTimeout = setTimeout(() => {
             lodTimeout = null;
             if (cancelled) return;
-            let nextResolution = resolution;
             if (resolution === "50m" && current.zoom > LOD_ZOOM_THRESHOLD) {
-              nextResolution = "10m";
+              applyFill("10m");
             } else if (
               resolution === "10m" &&
               current.zoom < LOD_ZOOM_THRESHOLD * LOD_HYSTERESIS
             ) {
-              nextResolution = "50m";
+              applyFill("50m");
             }
-            rebuildLayers(nextResolution);
           }, LOD_DEBOUNCE_MS);
         };
 
