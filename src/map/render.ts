@@ -102,12 +102,18 @@ export function fillGeometry(graphics: Graphics, geometry: Geometry, fillColor: 
 // detail: one consistent (and comfortably low) point density, so the
 // border never needs rebuilding for either zoom *or* LOD changes -- it's
 // built once and never touched again.
-export function strokeGeometry(graphics: Graphics, geometry: Geometry) {
+//
+// `color` is the only stylable parameter here -- pixelLine ignores `width`
+// entirely (Pixi's pixel-line build path doesn't take a line style at all),
+// so a thinner/thicker line isn't achievable this way. Callers that want
+// state borders to read as subordinate to country borders (see
+// MapCanvas.tsx) do it with a lighter color, not a thinner one.
+export function strokeGeometry(graphics: Graphics, geometry: Geometry, color: number = BORDER_COLOR) {
   for (const rings of toPolygons(geometry)) {
     for (const ring of rings) {
       for (const piece of splitAtAntimeridian(ring)) {
         const points = projectPoints(piece);
-        graphics.poly(points, true).stroke({ width: 1, color: BORDER_COLOR, pixelLine: true });
+        graphics.poly(points, true).stroke({ width: 1, color, pixelLine: true });
       }
     }
   }

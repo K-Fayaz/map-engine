@@ -1,7 +1,8 @@
 import { useEffect, useRef } from "react";
 import { Application, Container, Graphics } from "pixi.js";
 import { loadWorldData, type Resolution } from "./loadWorldData";
-import { buildCountryEntities } from "./entities";
+import { loadStatesData } from "./loadStatesData";
+import { buildCountryEntities, buildStateEntities } from "./entities";
 import {
   fillGeometry,
   strokeGeometry,
@@ -13,6 +14,11 @@ import { type Camera, MIN_ZOOM, clampCamera, zoomAt, lerpCamera } from "./camera
 
 const OCEAN_COLOR = 0x068494;
 const LAND_COLOR = 0xf5f5f2;
+// Lighter than render.ts's country BORDER_COLOR (0x4a4a4a) so state
+// boundaries read as subordinate to country borders. Can't lean on width to
+// do that instead -- see strokeGeometry's comment on why pixelLine ignores
+// it.
+const STATE_BORDER_COLOR = 0xa8a8a8;
 
 // How far past the default view (world exactly fills the screen) the user
 // can zoom in. Arbitrary reasonable cap for V1 -- there's no Phase 3
@@ -33,6 +39,21 @@ const WHEEL_ZOOM_SENSITIVITY = 0.0015;
 const LOD_ZOOM_THRESHOLD = 4;
 const LOD_HYSTERESIS = 0.85;
 const LOD_DEBOUNCE_MS = 150;
+
+// Threshold past which states become visible. Deeper than
+// LOD_ZOOM_THRESHOLD since states are a finer detail level than 10m country
+// fill -- tuned by feel, same as the other zoom constants here.
+const STATE_ZOOM_THRESHOLD = 6;
+
+// Toggles a layer's visibility based on zoom. Unlike the LOD fill swap
+// above, nothing gets rebuilt here, so this is cheap enough to run every
+// tick straight off the eased camera zoom instead of needing
+// scheduleLodCheck's debounce -- no risk of "thrashing" when a flag flip is
+// the only cost. Reused by whichever Phase 3 layer needs a "hidden until
+// zoomed in" reveal next (labels, cities, rivers/lakes).
+function setVisibleAboveZoom(layer: Container, zoom: number, threshold: number) {
+  layer.visible = zoom > threshold;
+}
 
 export function MapCanvas() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -90,6 +111,24 @@ export function MapCanvas() {
           return c;
         });
         worldContainer.addChild(countriesLayer);
+
+        // States sit above countries in the layer stack (see
+        // architecture.md's layer list). They only ship at one resolution
+        // (10m) -- no LOD swap needed, see loadStatesData.ts -- so, unlike
+        // countries, containers are built once and never touched again.
+        // Border only, no fill: the country/land fill underneath already
+        // colors the area, and a state fill only becomes useful once Phase 4
+        // selection needs one to highlight. Starts hidden to avoid a one-
+        // frame flash before the ticker's setVisibleAboveZoom takes over.
+        const stateEntities = buildStateEntities(loadStatesData(), initialWorld.countries);
+        const statesLayer = new Container();
+        statesLayer.visible = false;
+        for (const entity of stateEntities) {
+          const c = new CountryContainer(entity);
+          strokeGeometry(c.stroke, entity.geometry, STATE_BORDER_COLOR);
+          statesLayer.addChild(c);
+        }
+        worldContainer.addChild(statesLayer);
 
         app.stage.addChild(worldContainer);
 
@@ -239,6 +278,7 @@ export function MapCanvas() {
           current = lerpCamera(current, target, EASE_FACTOR);
           worldContainer.position.set(current.x, current.y);
           worldContainer.scale.set(baseScaleX * current.zoom, baseScaleY * current.zoom);
+          setVisibleAboveZoom(statesLayer, current.zoom, STATE_ZOOM_THRESHOLD);
         });
       });
 
