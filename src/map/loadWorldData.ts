@@ -22,13 +22,28 @@ export interface MultiPolygonGeometry {
   coordinates: Position[][][];
 }
 
-export type Geometry = PolygonGeometry | MultiPolygonGeometry;
+export interface PointGeometry {
+  type: "Point";
+  coordinates: Position;
+}
+
+// Polygon/MultiPolygon -- the only shapes render.ts's fillGeometry/
+// strokeGeometry know how to draw. Kept as its own alias (rather than just
+// inlining the union) so render.ts can stay typed to exactly what it
+// supports, distinct from Entity's broader Geometry below.
+export type AreaGeometry = PolygonGeometry | MultiPolygonGeometry;
+
+// Broader than AreaGeometry -- includes Point for label entities (see
+// entities.ts's buildLabelEntities). Entity.geometry uses this since
+// architecture.md's Entity shape is meant to hold any entity's geometry,
+// not just area ones.
+export type Geometry = AreaGeometry | PointGeometry;
 
 export interface GeoFeature {
   type: "Feature";
   id?: string;
   properties: { name?: string };
-  geometry: Geometry;
+  geometry: AreaGeometry;
 }
 
 export interface GeoFeatureCollection {

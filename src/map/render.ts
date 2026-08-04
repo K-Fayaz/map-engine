@@ -1,5 +1,5 @@
-import { Container, Graphics } from "pixi.js";
-import type { Geometry, Position } from "./loadWorldData";
+import { Container, Graphics, BitmapText, BitmapFont } from "pixi.js";
+import type { AreaGeometry, Position } from "./loadWorldData";
 import type { Entity } from "./entities";
 
 const BORDER_COLOR = 0x4a4a4a;
@@ -19,7 +19,7 @@ export function project(lon: number, lat: number): [number, number] {
   return [x, y];
 }
 
-function toPolygons(geometry: Geometry) {
+function toPolygons(geometry: AreaGeometry) {
   return geometry.type === "Polygon" ? [geometry.coordinates] : geometry.coordinates;
 }
 
@@ -69,7 +69,7 @@ function projectPoints(points: Position[]): number[] {
   return points.flatMap(([lon, lat]) => project(lon, lat));
 }
 
-export function fillGeometry(graphics: Graphics, geometry: Geometry, fillColor: number) {
+export function fillGeometry(graphics: Graphics, geometry: AreaGeometry, fillColor: number) {
   for (const rings of toPolygons(geometry)) {
     rings.forEach((ring, ringIndex) => {
       for (const piece of splitAtAntimeridian(ring)) {
@@ -108,7 +108,7 @@ export function fillGeometry(graphics: Graphics, geometry: Geometry, fillColor: 
 // so a thinner/thicker line isn't achievable this way. Callers that want
 // state borders to read as subordinate to country borders (see
 // MapCanvas.tsx) do it with a lighter color, not a thinner one.
-export function strokeGeometry(graphics: Graphics, geometry: Geometry, color: number = BORDER_COLOR) {
+export function strokeGeometry(graphics: Graphics, geometry: AreaGeometry, color: number = BORDER_COLOR) {
   for (const rings of toPolygons(geometry)) {
     for (const ring of rings) {
       for (const piece of splitAtAntimeridian(ring)) {
@@ -133,5 +133,127 @@ export class CountryContainer extends Container {
     super();
     this.addChild(this.fill);
     this.addChild(this.stroke);
+  }
+}
+
+export interface LabelStyle {
+  fontSize: number;
+  color: number;
+}
+
+const DEFAULT_LABEL_STYLE: LabelStyle = { fontSize: 14, color: 0x333333 };
+
+const LABEL_FONT_FAMILY = "MapLabelFont";
+
+// Every character that appears in any country or state label name in the
+// vendored data (src/map/data/states-10m.json + world-atlas's
+// countries-*.json), derived by scanning both files directly rather than
+// guessing a broad Unicode range. All romanized/Latin-script (Vietnamese,
+// Azerbaijani, Romanian, etc. diacritics included) -- Natural Earth's
+// admin-1 `name` field turned out not to use native non-Latin scripts
+// (Cyrillic, CJK, ...) for any country in this dataset. If the vendored
+// label data ever changes, regenerate this by scanning both files' `name`
+// properties for their union of characters -- an out-of-date set doesn't
+// break anything, it just silently drops unlisted glyphs from rendered
+// labels.
+const LABEL_FONT_CHARS =
+  " '(),-./ABCDEFGHIJKLMNOPQRSTUVWXYZ[]`abcdefghijklmnopqrstuvwxyzÁÅÇÉÎÐÑÓÖØÚàáâãäåæçèéêëìíîïðñòóôõöøúûüýĀāăćċČčĐĔęğĠġĦħĩīĭİıŁňŌōŏœřŚŞşŠšţũūźŻżŽžơưȘșəḍḩḷṇṭạảậắằẵếềệịọồộớừ–";
+
+// A bitmap font is a texture atlas of pre-rendered glyphs, generated once;
+// after that, constructing any number of BitmapText instances is cheap
+// (glyph lookup + layout, no canvas work) -- unlike Pixi's regular Text,
+// which rasterizes each distinct string to its own canvas + GPU texture on
+// first render. That per-string cost is what made building ~4600 state
+// labels expensive the moment they were first revealed (~1.9s of blocking
+// work, measured via chrome-devtools): switching to a shared bitmap font
+// moves that cost to one upfront atlas generation instead of one per label.
+// Installed lazily (once) rather than at module load, since BitmapFont.install
+// touches the renderer/canvas and doesn't need to run before it's needed.
+let labelFontInstalled = false;
+function ensureLabelFontInstalled() {
+  if (labelFontInstalled) return;
+  BitmapFont.install({
+    name: LABEL_FONT_FAMILY,
+    style: { fontFamily: "sans-serif", fontSize: 32 },
+    chars: LABEL_FONT_CHARS,
+    resolution: 2,
+  });
+  labelFontInstalled = true;
+}
+
+// A label's BitmapText, positioned once at its world anchor and never
+// repositioned again -- once added under worldContainer (see
+// counterScaleLabelLayer below), Pixi's normal parent-child transform
+// carries it through every pan/zoom automatically, the same way
+// CountryContainer's fill/stroke are, so there's no per-frame position
+// recompute needed here. fontSize/fill are freely overridable per instance
+// even though the underlying atlas was generated at one fixed size/color
+// (see BitmapText's own docs) -- country and state labels share the one
+// installed font rather than needing one installed per style.
+export class LabelText extends BitmapText {
+  entity: Entity;
+
+  constructor(entity: Entity, style: LabelStyle = DEFAULT_LABEL_STYLE) {
+    ensureLabelFontInstalled();
+    super({
+      text: entity.name,
+      style: { fontFamily: LABEL_FONT_FAMILY, fontSize: style.fontSize, fill: style.color },
+      anchor: 0.5,
+    });
+
+    // Guaranteed by construction (see entities.ts's buildLabelEntities) --
+    // this is a label entity, so its geometry is always a Point. Checked
+    // at runtime rather than trusted blindly since, unlike the AreaGeometry
+    // casts in MapCanvas.tsx, there's no static entity-array-level guarantee
+    // here (LabelText can be constructed from any Entity).
+    if (entity.geometry.type !== "Point") {
+      throw new Error(`LabelText: entity "${entity.id}" has no Point geometry`);
+    }
+    const [lon, lat] = entity.geometry.coordinates;
+    const [x, y] = project(lon, lat);
+
+    this.entity = entity;
+    this.position.set(x, y);
+
+    // Every label in this app goes through MapCanvas.tsx's decluttering
+    // pass (viewport culling + collision placement) before it's ever meant
+    // to actually show -- but that pass runs on a debounce, while a label
+    // layer's own container-level `.visible` can flip on immediately
+    // (every tick). Defaulting to hidden here closes that gap: without it,
+    // up to a whole layer's worth of never-yet-culled labels (thousands,
+    // for states) sit at Pixi's default `visible=true` and get rendered in
+    // a single expensive burst the moment their layer turns on, before the
+    // debounced pass has had a chance to hide the ones that should stay
+    // hidden. Measured this directly -- a label layer's first reveal
+    // produced a 525ms long task that vanished once labels defaulted to
+    // hidden instead.
+    this.visible = false;
+  }
+}
+
+// Cancels each label's inherited zoom stretch so text renders at a constant
+// screen-pixel size regardless of camera zoom.
+//
+// This must be applied per-*label*, not to a shared parent layer: a
+// Container's `position` is transformed by its *own* scale before its
+// parent's, so scaling the layer itself doesn't just shrink rendered text
+// size -- it also shrinks every child's stored position back toward the
+// layer's local origin, collapsing all labels toward one point instead of
+// leaving them pinned at their correct world location. (Learned the hard
+// way -- an earlier version scaled the layer and every label ended up
+// thousands of pixels off-screen, silently rendering nothing.) A node's own
+// scale, by contrast, only affects its own rendering size, not its own
+// position, so applying this to each LabelText individually keeps position
+// and size independent, which is what's actually needed here.
+export function counterScaleLabelLayer(
+  layer: Container,
+  baseScaleX: number,
+  baseScaleY: number,
+  zoom: number,
+) {
+  const sx = 1 / (baseScaleX * zoom);
+  const sy = 1 / (baseScaleY * zoom);
+  for (const child of layer.children) {
+    child.scale.set(sx, sy);
   }
 }

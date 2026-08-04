@@ -1,16 +1,35 @@
 import { useEffect, useRef } from "react";
 import { Application, Container, Graphics } from "pixi.js";
-import { loadWorldData, type Resolution } from "./loadWorldData";
+import { loadWorldData, type Resolution, type AreaGeometry } from "./loadWorldData";
 import { loadStatesData } from "./loadStatesData";
-import { buildCountryEntities, buildStateEntities } from "./entities";
+import { buildCountryEntities, buildStateEntities, buildLabelEntities } from "./entities";
 import {
   fillGeometry,
   strokeGeometry,
   CountryContainer,
+  LabelText,
+  counterScaleLabelLayer,
+  type LabelStyle,
   WORLD_WIDTH,
   WORLD_HEIGHT,
 } from "./render";
-import { type Camera, MIN_ZOOM, clampCamera, zoomAt, lerpCamera } from "./camera";
+import {
+  type Camera,
+  MIN_ZOOM,
+  clampCamera,
+  zoomAt,
+  lerpCamera,
+  viewportWorldBounds,
+} from "./camera";
+import { placeLabelsWithoutOverlap, type LabelCandidate } from "./labelLayout";
+
+// Labels (country/state) are mid-rework -- state-layer decluttering still
+// has known overlap issues (see .development_logs/changelog.md). Off by
+// default via .env so a fresh clone doesn't show the rough edges; flip to
+// "true" in .env.local (gitignored) while actively working on labels.
+// Build-time flag, not a live in-app toggle -- changing it needs a dev
+// server restart / rebuild.
+const SHOW_LABELS = import.meta.env.VITE_SHOW_LABELS === "true";
 
 const OCEAN_COLOR = 0x068494;
 const LAND_COLOR = 0xf5f5f2;
@@ -19,6 +38,9 @@ const LAND_COLOR = 0xf5f5f2;
 // do that instead -- see strokeGeometry's comment on why pixelLine ignores
 // it.
 const STATE_BORDER_COLOR = 0xa8a8a8;
+// Smaller and lighter than render.ts's default label style, same
+// subordinate-to-country relationship as STATE_BORDER_COLOR above.
+const STATE_LABEL_STYLE: LabelStyle = { fontSize: 10, color: 0x555555 };
 
 // How far past the default view (world exactly fills the screen) the user
 // can zoom in. Arbitrary reasonable cap for V1 -- there's no Phase 3
@@ -40,6 +62,12 @@ const LOD_ZOOM_THRESHOLD = 4;
 const LOD_HYSTERESIS = 0.85;
 const LOD_DEBOUNCE_MS = 150;
 
+// Same debounce duration as LOD_DEBOUNCE_MS, but a logically separate
+// trigger: label decluttering needs to re-run on *panning* too (the
+// viewport shifts, so which labels are candidates changes), unlike the LOD
+// swap, which panning alone can never affect.
+const LABEL_DECLUTTER_DEBOUNCE_MS = 150;
+
 // Threshold past which states become visible. Deeper than
 // LOD_ZOOM_THRESHOLD since states are a finer detail level than 10m country
 // fill -- tuned by feel, same as the other zoom constants here.
@@ -53,6 +81,13 @@ const STATE_ZOOM_THRESHOLD = 6;
 // zoomed in" reveal next (labels, cities, rivers/lakes).
 function setVisibleAboveZoom(layer: Container, zoom: number, threshold: number) {
   layer.visible = zoom > threshold;
+}
+
+// Complementary "hidden once zoomed in" version, for country labels: they
+// show at the default view and hide the moment state labels take over at
+// the same STATE_ZOOM_THRESHOLD, rather than both being visible at once.
+function setVisibleAtOrBelowZoom(layer: Container, zoom: number, threshold: number) {
+  layer.visible = zoom <= threshold;
 }
 
 export function MapCanvas() {
@@ -73,7 +108,14 @@ export function MapCanvas() {
       })
       .then(() => {
         if (cancelled) {
-          app.destroy(true, { children: true });
+          // releaseGlobalResources clears Pixi's pooled batcher buffers on
+        // cleanup -- without it, React.StrictMode's dev-mode double-invoke
+        // (mount -> cleanup -> mount again) leaves the second Application
+        // with a stale, undersized buffer inherited from the first, which
+        // then throws "GL_INVALID_OPERATION: glDrawElements: Insufficient
+        // buffer size" once enough BitmapText glyph batches are drawn to
+        // exceed it (see https://github.com/pixijs/pixijs/discussions/11678).
+        app.destroy({ removeView: true, releaseGlobalResources: true }, { children: true });
           return;
         }
 
@@ -106,7 +148,10 @@ export function MapCanvas() {
         const countriesLayer = new Container();
         const countryContainers = borderEntities.map((entity) => {
           const c = new CountryContainer(entity);
-          strokeGeometry(c.stroke, entity.geometry);
+          // Safe: borderEntities comes from buildCountryEntities, which never
+          // produces label (Point) geometry -- entity.geometry's static type
+          // is just the broader Entity-wide Geometry union.
+          strokeGeometry(c.stroke, entity.geometry as AreaGeometry);
           countriesLayer.addChild(c);
           return c;
         });
@@ -125,10 +170,54 @@ export function MapCanvas() {
         statesLayer.visible = false;
         for (const entity of stateEntities) {
           const c = new CountryContainer(entity);
-          strokeGeometry(c.stroke, entity.geometry, STATE_BORDER_COLOR);
+          // Safe: same reasoning as the countryContainers cast above --
+          // buildStateEntities never produces label geometry either.
+          strokeGeometry(c.stroke, entity.geometry as AreaGeometry, STATE_BORDER_COLOR);
           statesLayer.addChild(c);
         }
         worldContainer.addChild(statesLayer);
+
+        // Labels sit above everything (see architecture.md's layer list --
+        // Labels is the topmost layer). They're children of worldContainer
+        // too, not a separate top-level overlay: that way each label's
+        // *position* rides worldContainer's existing pan/zoom transform for
+        // free (see render.ts's LabelText), and only *scale* needs
+        // correcting per tick to keep text a constant screen size despite
+        // that same transform.
+        //
+        // The label *objects* are all built upfront (countryLabelObjects /
+        // stateLabelObjects), but the layers themselves start empty --
+        // declutterLabels() (below) is what actually attaches/detaches
+        // labels as Pixi children, adding only whatever survives viewport
+        // culling + collision placement. Measured directly that this
+        // matters, not just tidiness: leaving all ~4600 state labels
+        // permanently parented (even individually hidden via
+        // `.visible = false`) caused several hundred ms of one-time cost
+        // somewhere in Pixi's own render/bounds pipeline the moment their
+        // shared parent container first turned visible -- not reproducible
+        // by timing this file's own JS, so it's Pixi-internal cost that
+        // scales with a container's actual child count. Keeping the live
+        // child count down to only what's currently placed (tens, not
+        // thousands) avoids it.
+        // Empty arrays when SHOW_LABELS is off -- skips buildLabelEntities/
+        // LabelText/BitmapFont-install cost entirely, not just hiding the
+        // result. The layers themselves are still created (declutterLabels,
+        // counterScaleLabelLayer etc. all reference them unconditionally),
+        // but stay empty, so every downstream label operation becomes a
+        // no-op over a 0-length array/child list rather than needing
+        // SHOW_LABELS checks sprinkled through this whole file.
+        const countryLabelObjects = SHOW_LABELS
+          ? buildLabelEntities(borderEntities).map((entity) => new LabelText(entity))
+          : [];
+        const countryLabelsLayer = new Container();
+        worldContainer.addChild(countryLabelsLayer);
+
+        const stateLabelObjects = SHOW_LABELS
+          ? buildLabelEntities(stateEntities).map((entity) => new LabelText(entity, STATE_LABEL_STYLE))
+          : [];
+        const stateLabelsLayer = new Container();
+        stateLabelsLayer.visible = false;
+        worldContainer.addChild(stateLabelsLayer);
 
         app.stage.addChild(worldContainer);
 
@@ -151,7 +240,9 @@ export function MapCanvas() {
           for (const c of countryContainers) {
             const match = fillEntities.get(c.entity.id);
             c.fill.clear();
-            if (match) fillGeometry(c.fill, match.geometry, LAND_COLOR);
+            // Safe: same reasoning as above -- fillEntities is built from
+            // buildCountryEntities, never label entities.
+            if (match) fillGeometry(c.fill, match.geometry as AreaGeometry, LAND_COLOR);
           }
         }
 
@@ -164,12 +255,29 @@ export function MapCanvas() {
         let current: Camera = { x: 0, y: 0, zoom: 1 };
         let target: Camera = { ...current };
 
+        // Applies the current camera state to the scene graph -- called
+        // once synchronously below (so the initial declutterLabels() call
+        // sees correct transforms instead of Pixi's default (1,1) scale,
+        // before the ticker has ever run) and every tick thereafter.
+        function applyCameraTransform() {
+          current = lerpCamera(current, target, EASE_FACTOR);
+          worldContainer.position.set(current.x, current.y);
+          worldContainer.scale.set(baseScaleX * current.zoom, baseScaleY * current.zoom);
+          setVisibleAboveZoom(statesLayer, current.zoom, STATE_ZOOM_THRESHOLD);
+          setVisibleAboveZoom(stateLabelsLayer, current.zoom, STATE_ZOOM_THRESHOLD);
+          setVisibleAtOrBelowZoom(countryLabelsLayer, current.zoom, STATE_ZOOM_THRESHOLD);
+          counterScaleLabelLayer(countryLabelsLayer, baseScaleX, baseScaleY, current.zoom);
+          counterScaleLabelLayer(stateLabelsLayer, baseScaleX, baseScaleY, current.zoom);
+        }
+        applyCameraTransform();
+
         const onResize = () => {
           const { width, height } = app.screen;
           baseScaleX = width / WORLD_WIDTH;
           baseScaleY = height / WORLD_HEIGHT;
           current = clampCamera(current, width, height, MAX_ZOOM);
           target = clampCamera(target, width, height, MAX_ZOOM);
+          scheduleLabelDeclutter();
         };
         app.renderer.on("resize", onResize);
 
@@ -210,6 +318,7 @@ export function MapCanvas() {
           );
           current = next;
           target = next;
+          scheduleLabelDeclutter();
         };
 
         const onPointerUp = (e: PointerEvent) => {
@@ -246,6 +355,98 @@ export function MapCanvas() {
           }, LOD_DEBOUNCE_MS);
         };
 
+        // Declutters whichever label layer is currently active (matches the
+        // same current.zoom > STATE_ZOOM_THRESHOLD check the ticker uses for
+        // layer visibility, so the two always agree on which layer is
+        // "live"). Two passes over *all* of that layer's label objects
+        // (not just its current children -- see the layer-building comment
+        // above for why child count is kept minimal):
+        //  1. Cull to labels inside the current viewport (see camera.ts's
+        //     viewportWorldBounds) -- cheap numeric comparisons against
+        //     each label's world-space position, no Pixi work, so doing
+        //     this over all ~4600 state labels every time is fine.
+        //  2. For only the (much smaller) surviving candidates, compute
+        //     their screen-space box and run them through labelLayout.ts's
+        //     greedy collision placement. Collision winners get attached;
+        //     losers stay detached -- keeping labels as actual children
+        //     even while invisible is exactly the cost this whole
+        //     attach/detach approach exists to avoid.
+        //
+        // The screen-space box is computed directly from data already
+        // trusted here (world position + camera state), *not* Pixi's
+        // getBounds(): getBounds() composes through the parent chain, which
+        // Pixi only updates lazily during its own render cycle. Calling it
+        // synchronously right after addChild -- the first version of this
+        // function did -- returned (0,0,0,0) every time, which silently
+        // broke collision detection (every pair of zero-size boxes reads as
+        // "not overlapping", so nothing ever lost). label.width/height are
+        // local-only and correct immediately, parent or not -- but they
+        // reflect the label's *current* .scale, which the ticker's
+        // counterScaleLabelLayer only updates for already-attached
+        // children, so a label becoming a candidate for the first time this
+        // cycle needs that correction applied here explicitly too.
+        function declutterLabels() {
+          const isStates = current.zoom > STATE_ZOOM_THRESHOLD;
+          const layer = isStates ? stateLabelsLayer : countryLabelsLayer;
+          const allLabels = isStates ? stateLabelObjects : countryLabelObjects;
+          const { width, height } = app.screen;
+          const bounds = viewportWorldBounds(current, width, height, baseScaleX, baseScaleY);
+          const scaleX = baseScaleX * current.zoom;
+          const scaleY = baseScaleY * current.zoom;
+
+          const candidates: LabelCandidate[] = [];
+          const candidateLabels: LabelText[] = [];
+
+          for (const label of allLabels) {
+            const { x: wx, y: wy } = label.position;
+            if (wx < bounds.minX || wx > bounds.maxX || wy < bounds.minY || wy > bounds.maxY) {
+              if (label.parent === layer) layer.removeChild(label);
+              continue;
+            }
+            label.scale.set(1 / scaleX, 1 / scaleY);
+            const screenX = current.x + wx * scaleX;
+            const screenY = current.y + wy * scaleY;
+            candidates.push({
+              id: label.entity.id,
+              importance: label.entity.metadata?.area ?? 0,
+              x: screenX - label.width / 2,
+              y: screenY - label.height / 2,
+              width: label.width,
+              height: label.height,
+            });
+            candidateLabels.push(label);
+          }
+
+          const keep = placeLabelsWithoutOverlap(candidates);
+          for (const label of candidateLabels) {
+            const shouldShow = keep.has(label.entity.id);
+            label.visible = shouldShow;
+            if (shouldShow) {
+              if (label.parent !== layer) layer.addChild(label);
+            } else if (label.parent === layer) {
+              layer.removeChild(label);
+            }
+          }
+        }
+
+        // Debounced off both wheel (zoom) and drag (pan) -- unlike the LOD
+        // check above, panning alone *does* change which labels are
+        // candidates (the viewport itself moved), so this can't reuse
+        // scheduleLodCheck's wheel-only trigger.
+        let labelDeclutterTimeout: ReturnType<typeof setTimeout> | null = null;
+        const scheduleLabelDeclutter = () => {
+          if (labelDeclutterTimeout !== null) clearTimeout(labelDeclutterTimeout);
+          labelDeclutterTimeout = setTimeout(() => {
+            labelDeclutterTimeout = null;
+            if (cancelled) return;
+            declutterLabels();
+          }, LABEL_DECLUTTER_DEBOUNCE_MS);
+        };
+
+        // Declutter the default view immediately rather than waiting for
+        // the first interaction to trigger the debounce above.
+        declutterLabels();
+
         // Wheel zoom: cursor-anchored, eased (only `target` is set here --
         // the ticker's lerpCamera above carries `current` toward it). Based
         // on `target` rather than `current` so repeated fast wheel ticks
@@ -271,21 +472,24 @@ export function MapCanvas() {
           const zoomed = zoomAt(target, e.offsetX, e.offsetY, requestedZoom);
           target = clampCamera(zoomed, width, height, MAX_ZOOM);
           scheduleLodCheck();
+          scheduleLabelDeclutter();
         };
         canvas.addEventListener("wheel", onWheel, { passive: false });
 
-        app.ticker.add(() => {
-          current = lerpCamera(current, target, EASE_FACTOR);
-          worldContainer.position.set(current.x, current.y);
-          worldContainer.scale.set(baseScaleX * current.zoom, baseScaleY * current.zoom);
-          setVisibleAboveZoom(statesLayer, current.zoom, STATE_ZOOM_THRESHOLD);
-        });
+        app.ticker.add(applyCameraTransform);
       });
 
     return () => {
       cancelled = true;
       if (app.renderer) {
-        app.destroy(true, { children: true });
+        // releaseGlobalResources clears Pixi's pooled batcher buffers on
+        // cleanup -- without it, React.StrictMode's dev-mode double-invoke
+        // (mount -> cleanup -> mount again) leaves the second Application
+        // with a stale, undersized buffer inherited from the first, which
+        // then throws "GL_INVALID_OPERATION: glDrawElements: Insufficient
+        // buffer size" once enough BitmapText glyph batches are drawn to
+        // exceed it (see https://github.com/pixijs/pixijs/discussions/11678).
+        app.destroy({ removeView: true, releaseGlobalResources: true }, { children: true });
       }
     };
   }, []);

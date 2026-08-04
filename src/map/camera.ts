@@ -74,3 +74,42 @@ export function lerpCamera(current: Camera, target: Camera, factor: number): Cam
     zoom: current.zoom + (target.zoom - current.zoom) * factor,
   };
 }
+
+export interface WorldBounds {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
+
+// The world-space rectangle (same coordinate space render.ts's `project()`
+// outputs, and what each label's `.position` is set to) currently visible
+// on screen -- the inverse of the transform MapCanvas.tsx's ticker applies
+// every frame (worldContainer.position = camera.x/y, worldContainer.scale =
+// baseScaleX/Y * camera.zoom). Used to cull which labels are even
+// candidates for collision placement instead of checking all ~4800 of them
+// every time.
+//
+// Unlike every other function in this file, this one needs baseScaleX/Y
+// explicitly: clampCamera/zoomAt deliberately never leave "screen-content"
+// space (where the per-axis stretch is already implicitly folded into the
+// zoom=1 baseline, so it cancels out and never needs to appear), but this
+// function's whole job is to cross into true world units, which can't be
+// done without it.
+export function viewportWorldBounds(
+  camera: Camera,
+  screenWidth: number,
+  screenHeight: number,
+  baseScaleX: number,
+  baseScaleY: number,
+): WorldBounds {
+  const scaleX = baseScaleX * camera.zoom;
+  const scaleY = baseScaleY * camera.zoom;
+
+  return {
+    minX: (0 - camera.x) / scaleX,
+    maxX: (screenWidth - camera.x) / scaleX,
+    minY: (0 - camera.y) / scaleY,
+    maxY: (screenHeight - camera.y) / scaleY,
+  };
+}
