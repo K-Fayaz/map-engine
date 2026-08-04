@@ -75,6 +75,24 @@ export function lerpCamera(current: Camera, target: Camera, factor: number): Cam
   };
 }
 
+// Screen point -> world-space point (same space project()/unproject() in
+// render.ts use), the inverse of the transform MapCanvas.tsx's ticker
+// applies each frame. Same formula viewportWorldBounds below applies to each
+// of the four viewport corners, extracted here since hit-testing (see
+// MapCanvas.tsx) needs it for a single arbitrary point (the cursor), not the
+// viewport edges.
+export function screenToWorld(
+  camera: Camera,
+  screenX: number,
+  screenY: number,
+  baseScaleX: number,
+  baseScaleY: number,
+): [number, number] {
+  const scaleX = baseScaleX * camera.zoom;
+  const scaleY = baseScaleY * camera.zoom;
+  return [(screenX - camera.x) / scaleX, (screenY - camera.y) / scaleY];
+}
+
 export interface WorldBounds {
   minX: number;
   minY: number;

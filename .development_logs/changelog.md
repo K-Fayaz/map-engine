@@ -5,6 +5,117 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-04 — Phase 4: Interaction (country + state; city deferred)
+
+### Summary
+Implemented roadmap Phase 4's interaction requirements for countries and
+states: hover detection, click-to-select, a selection/hover highlight
+overlay, and a name search box. City selection is explicitly deferred —
+Phase 3c (city entities) was never built, so there's nothing to select yet;
+the same infrastructure here will cover cities once that data exists.
+Camera fly-to-selection is also explicitly out of scope (Phase 5). This is
+greenfield work — no interaction code (`eventMode`, `hitArea`, click/hover
+distinction, point-in-polygon, app-level UI state) existed anywhere in the
+codebase before this.
+
+### Changes
+
+**Hit-testing (`entities.ts`, `render.ts`, `camera.ts`)**
+- `entities.ts`: `pointInPolygon(lon, lat, geometry)` — even-odd ray-casting,
+  reusing `splitAtAntimeridian` per ring (same approach `computeCentroid`
+  already uses) and the same ring-index exterior(0)/hole(>0) convention as
+  `fillGeometry`/`computeArea`. `findEntityAt(entities, lon, lat)` — linear
+  scan with a `boundingBox` prefilter ahead of the exact test; inherits
+  `computeBoundingBox`'s already-accepted antimeridian gap for Russia/Fiji
+  (harmless here — an overly wide box only ever fails to reject early, it
+  never produces a wrong hit).
+- `render.ts`: `unproject(x, y)`, the exact inverse of `project`.
+- `camera.ts`: `screenToWorld(camera, screenX, screenY, baseScaleX,
+  baseScaleY)`, extracted from the formula already inlined four times inside
+  `viewportWorldBounds` — needed here for a single arbitrary point (the
+  cursor), not just the four viewport corners.
+- Manual point-in-polygon was chosen over Pixi's Federated Events/`hitArea`
+  system — consistent with the codebase's existing style (pure camera math,
+  no Pixi-dependent logic outside `render.ts`/`MapCanvas.tsx`) and avoids
+  enabling per-object interactivity across ~4850 `CountryContainer`
+  instances.
+
+**Selection/hover state (`interactionStore.ts`, new)**
+- Minimal plain pub/sub store (no state-management library installed):
+  `entities`, `selectedEntityId`, `hoveredEntityId`; `setEntities`,
+  `selectEntity`, `hoverEntity`, `search`, `subscribe`. Exposed both as a
+  plain singleton (for `MapCanvas.tsx`'s imperative Pixi code to read/write
+  directly, without triggering React re-renders of the whole canvas effect)
+  and via a `useInteractionStore()` hook (`useSyncExternalStore`) for React
+  components. Callable from anywhere, not just pointer handlers — matches
+  `architecture.md`'s "usable manually and through AI" principle, and sets
+  up cleanly for Phase 5/6 to drive selection programmatically.
+
+**MapCanvas.tsx wiring**
+- `findById(id)` on the store's `entities`, `drawHighlights()`: clears and
+  redraws two persistent Graphics (`hoverGraphic`, `selectionGraphic`, both
+  children of a new `highlightLayer`, last in `worldContainer`'s z-order so
+  the highlight shows above labels too) using `fillGeometry`'s new `alpha`
+  param for a translucent tint plus `strokeGeometry` for a crisp
+  zoom-invariant border. Hover is skipped when it matches the current
+  selection, to avoid a redundant double-highlight of the same shape. Not
+  run per-frame — only on `interactionStore.subscribe`, since
+  selection/hover changes on discrete events, not continuously.
+- Click vs. drag: `onPointerDown` now also resets a
+  `movedPastClickThreshold` flag; `onPointerMove` sets it once cumulative
+  movement exceeds `CLICK_MOVE_THRESHOLD_PX` (4px). `onPointerUp` only calls
+  `interactionStore.selectEntity(...)` if that flag never tripped — clicking
+  empty ocean/land clears the selection.
+- Hover: a new `!dragging` branch in `onPointerMove` runs the same
+  screenToWorld → unproject → findEntityAt pipeline and updates
+  `interactionStore.hoverEntity(...)` plus the cursor (`"pointer"` over a
+  hit, `"grab"` otherwise — drag still forces `"grabbing"`, unchanged).
+- Both pointer paths hit-test against `stateEntities` once
+  `current.zoom > STATE_ZOOM_THRESHOLD`, `borderEntities` otherwise — the
+  same threshold `declutterLabels` already uses for "which layer is live."
+- `unsubscribeInteraction` deliberately hoisted *outside* the `app.init()`
+  `.then()` callback (unlike everything else in this effect): `interactionStore`
+  is a persistent module-level singleton, not recreated per mount like `app`
+  is, so a React.StrictMode double-invoke cleanup has to actually call it or
+  it leaks one subscriber per discarded mount.
+
+**Search UI (`SearchBox.tsx`, new; `App.tsx`)**
+- Floating panel (`position: absolute`, top-left, plain inline styles — no
+  CSS framework in this repo) reading `useInteractionStore()`. Case-
+  insensitive substring match over `entity.name` (`interactionStore.search`,
+  no prebuilt index — ~4850 entities is trivial to filter per keystroke),
+  up to 10 results with a type badge; clicking a result selects it and
+  clears the query. Shows the current selection with a "Clear" action.
+- `App.tsx`: wraps `<MapCanvas />` and `<SearchBox />` in a `position:
+  relative` container so the search panel can float over the canvas.
+
+### Decisions
+- **Manual point-in-polygon, not Pixi's `eventMode`/`hitArea`** — see
+  Changes above. Consistent with the existing pure-camera-math style, and
+  sidesteps per-object interactivity cost across thousands of entities.
+- **Selection/hover state in a small custom store, not React `useState`
+  inside `MapCanvas`** — needed by both the imperative Pixi code and
+  React UI (search box), and settable programmatically per
+  `architecture.md`'s "usable manually and through AI" principle. No
+  state-management library was installed for this; the store here is
+  intentionally minimal, not a general-purpose addition.
+- **Highlight overlay redraws only on change, not per-frame** — selection/
+  hover are discrete events, not continuous like camera easing; reusing
+  `strokeGeometry`'s zoom-invariant `pixelLine` border means no per-tick
+  width correction is needed either.
+- **Selection persists across zoom/LOD/layer changes** — the highlight looks
+  the selected entity up by id from the flat `entities` list regardless of
+  which layer (`countriesLayer`/`statesLayer`) is currently "active" for new
+  clicks, so zooming in/out after selecting something doesn't lose it.
+
+### Deferred / not yet implemented
+- City entities/selection — no data yet (Phase 3c was never built).
+- Camera fly-to-selection / auto-framing (Phase 5).
+- The pre-existing state-label decluttering overlap bug (Phase 3b, unrelated
+  to this work).
+
+---
+
 ## 2026-08-04 — Phase 3b: Country/State Labels (feature-flagged — known issue remaining)
 
 ### Summary

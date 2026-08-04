@@ -2,10 +2,17 @@ import { useEffect, useRef } from "react";
 import { Application, Container, Graphics } from "pixi.js";
 import { loadWorldData, type Resolution, type AreaGeometry } from "./loadWorldData";
 import { loadStatesData } from "./loadStatesData";
-import { buildCountryEntities, buildStateEntities, buildLabelEntities } from "./entities";
+import {
+  buildCountryEntities,
+  buildStateEntities,
+  buildLabelEntities,
+  findEntityAt,
+  type Entity,
+} from "./entities";
 import {
   fillGeometry,
   strokeGeometry,
+  unproject,
   CountryContainer,
   LabelText,
   counterScaleLabelLayer,
@@ -20,8 +27,10 @@ import {
   zoomAt,
   lerpCamera,
   viewportWorldBounds,
+  screenToWorld,
 } from "./camera";
 import { placeLabelsWithoutOverlap, type LabelCandidate } from "./labelLayout";
+import { interactionStore } from "./interactionStore";
 
 // Labels (country/state) are mid-rework -- state-layer decluttering still
 // has known overlap issues (see .development_logs/changelog.md). Off by
@@ -73,6 +82,20 @@ const LABEL_DECLUTTER_DEBOUNCE_MS = 150;
 // fill -- tuned by feel, same as the other zoom constants here.
 const STATE_ZOOM_THRESHOLD = 6;
 
+// A pointerdown/pointerup pair whose cursor never moved more than this many
+// screen pixels counts as a click (select/deselect); anything past it is a
+// drag (pan), not a click -- Phase 2's drag handling never needed to make
+// this distinction since it had nothing else pointer events could mean.
+const CLICK_MOVE_THRESHOLD_PX = 4;
+
+// Selection reads as stronger than hover: brighter stroke, more opaque
+// fill tint. Both are translucent so the underlying country/state fill and
+// borders stay visible underneath.
+const HOVER_COLOR = 0xffd54a;
+const HOVER_FILL_ALPHA = 0.15;
+const SELECTION_COLOR = 0xffa000;
+const SELECTION_FILL_ALPHA = 0.3;
+
 // Toggles a layer's visibility based on zoom. Unlike the LOD fill swap
 // above, nothing gets rebuilt here, so this is cheap enough to run every
 // tick straight off the eased camera zoom instead of needing
@@ -99,6 +122,12 @@ export function MapCanvas() {
 
     let cancelled = false;
     const app = new Application();
+    // Hoisted out of the .then() below (unlike everything else there) --
+    // interactionStore is a persistent module-level singleton, not
+    // recreated per mount like `app` is, so a StrictMode double-invoke
+    // cleanup must actually unsubscribe or it leaks one subscriber per
+    // discarded mount.
+    let unsubscribeInteraction: (() => void) | null = null;
 
     app
       .init({
@@ -177,6 +206,12 @@ export function MapCanvas() {
         }
         worldContainer.addChild(statesLayer);
 
+        // Feeds Phase 4 interaction (search, and eventually anything else
+        // that needs to look an entity up by id from outside this effect) --
+        // countries and states only, no labels (they're derived display
+        // artifacts, not user-facing selectable entities).
+        interactionStore.setEntities([...borderEntities, ...stateEntities]);
+
         // Labels sit above everything (see architecture.md's layer list --
         // Labels is the topmost layer). They're children of worldContainer
         // too, not a separate top-level overlay: that way each label's
@@ -218,6 +253,51 @@ export function MapCanvas() {
         const stateLabelsLayer = new Container();
         stateLabelsLayer.visible = false;
         worldContainer.addChild(stateLabelsLayer);
+
+        // Selection/hover highlight -- last child of worldContainer so it
+        // renders above labels too, avoiding having to pick between the two
+        // label layers for z-order. Two persistent Graphics, redrawn (not
+        // rebuilt) only when the store's selected/hovered id actually
+        // changes -- see drawHighlights below, wired to
+        // interactionStore.subscribe near the label-declutter setup.
+        const highlightLayer = new Container();
+        const hoverGraphic = new Graphics();
+        const selectionGraphic = new Graphics();
+        highlightLayer.addChild(hoverGraphic);
+        highlightLayer.addChild(selectionGraphic);
+        worldContainer.addChild(highlightLayer);
+
+        const allEntities = [...borderEntities, ...stateEntities];
+        function findById(id: string | null): Entity | undefined {
+          if (!id) return undefined;
+          return allEntities.find((e) => e.id === id);
+        }
+
+        // Redraws whichever of the two highlight graphics changed. Hover is
+        // skipped when it matches the current selection -- otherwise the
+        // stronger selection highlight would sit underneath a redundant,
+        // weaker hover highlight of the exact same shape.
+        function drawHighlights() {
+          const { selectedEntityId, hoveredEntityId } = interactionStore.getState();
+
+          selectionGraphic.clear();
+          const selected = findById(selectedEntityId);
+          if (selected) {
+            const geometry = selected.geometry as AreaGeometry;
+            fillGeometry(selectionGraphic, geometry, SELECTION_COLOR, SELECTION_FILL_ALPHA);
+            strokeGeometry(selectionGraphic, geometry, SELECTION_COLOR);
+          }
+
+          hoverGraphic.clear();
+          if (hoveredEntityId && hoveredEntityId !== selectedEntityId) {
+            const hovered = findById(hoveredEntityId);
+            if (hovered) {
+              const geometry = hovered.geometry as AreaGeometry;
+              fillGeometry(hoverGraphic, geometry, HOVER_COLOR, HOVER_FILL_ALPHA);
+              strokeGeometry(hoverGraphic, geometry, HOVER_COLOR);
+            }
+          }
+        }
 
         app.stage.addChild(worldContainer);
 
@@ -281,6 +361,17 @@ export function MapCanvas() {
         };
         app.renderer.on("resize", onResize);
 
+        // Hit-tests a screen-space point against whichever entity layer is
+        // currently active for interaction -- states once zoomed in past
+        // STATE_ZOOM_THRESHOLD, countries otherwise. Same threshold
+        // declutterLabels uses for the same "which layer is live" question.
+        function hitTestScreenPoint(screenX: number, screenY: number): Entity | undefined {
+          const [wx, wy] = screenToWorld(current, screenX, screenY, baseScaleX, baseScaleY);
+          const [lon, lat] = unproject(wx, wy);
+          const candidates = current.zoom > STATE_ZOOM_THRESHOLD ? stateEntities : borderEntities;
+          return findEntityAt(candidates, lon, lat);
+        }
+
         // Drag pan: tracks the cursor 1:1 (no easing/momentum, per Phase 2
         // scope), so both current and target are set directly on move
         // rather than letting the ticker lerp toward a target. Pointer
@@ -292,9 +383,15 @@ export function MapCanvas() {
         let dragStartY = 0;
         let dragStartCameraX = 0;
         let dragStartCameraY = 0;
+        // Tracks whether this pointerdown/up pair has moved past
+        // CLICK_MOVE_THRESHOLD_PX yet -- distinguishes a click (select) from
+        // a drag (pan), since onPointerDown/onPointerUp alone can't tell
+        // those apart (both start/end with dragging = true/false).
+        let movedPastClickThreshold = false;
 
         const onPointerDown = (e: PointerEvent) => {
           dragging = true;
+          movedPastClickThreshold = false;
           dragStartX = e.offsetX;
           dragStartY = e.offsetY;
           dragStartCameraX = current.x;
@@ -304,7 +401,20 @@ export function MapCanvas() {
         };
 
         const onPointerMove = (e: PointerEvent) => {
-          if (!dragging) return;
+          if (!dragging) {
+            const hit = hitTestScreenPoint(e.offsetX, e.offsetY);
+            interactionStore.hoverEntity(hit?.id ?? null);
+            canvas.style.cursor = hit ? "pointer" : "grab";
+            return;
+          }
+
+          if (
+            !movedPastClickThreshold &&
+            Math.hypot(e.offsetX - dragStartX, e.offsetY - dragStartY) > CLICK_MOVE_THRESHOLD_PX
+          ) {
+            movedPastClickThreshold = true;
+          }
+
           const { width, height } = app.screen;
           const next = clampCamera(
             {
@@ -325,6 +435,11 @@ export function MapCanvas() {
           dragging = false;
           canvas.releasePointerCapture(e.pointerId);
           canvas.style.cursor = "grab";
+
+          if (!movedPastClickThreshold) {
+            const hit = hitTestScreenPoint(e.offsetX, e.offsetY);
+            interactionStore.selectEntity(hit?.id ?? null);
+          }
         };
 
         canvas.style.cursor = "grab";
@@ -447,6 +562,14 @@ export function MapCanvas() {
         // the first interaction to trigger the debounce above.
         declutterLabels();
 
+        // Redraws the highlight overlay whenever the store's
+        // selected/hovered entity changes -- from pointer events here, or
+        // from SearchBox selecting an entity by name. Not run per-frame:
+        // selection/hover change only on discrete events, not continuously,
+        // unlike applyCameraTransform above.
+        unsubscribeInteraction = interactionStore.subscribe(drawHighlights);
+        drawHighlights();
+
         // Wheel zoom: cursor-anchored, eased (only `target` is set here --
         // the ticker's lerpCamera above carries `current` toward it). Based
         // on `target` rather than `current` so repeated fast wheel ticks
@@ -481,6 +604,7 @@ export function MapCanvas() {
 
     return () => {
       cancelled = true;
+      unsubscribeInteraction?.();
       if (app.renderer) {
         // releaseGlobalResources clears Pixi's pooled batcher buffers on
         // cleanup -- without it, React.StrictMode's dev-mode double-invoke

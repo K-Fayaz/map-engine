@@ -1,4 +1,4 @@
-import type { AreaGeometry, Geometry, GeoFeatureCollection } from "./loadWorldData";
+import type { AreaGeometry, Geometry, GeoFeatureCollection, Position } from "./loadWorldData";
 import { splitAtAntimeridian } from "./render";
 import alpha3ToNumeric from "./data/iso-alpha3-to-numeric.json";
 
@@ -227,6 +227,65 @@ export function computeCentroid(geometry: AreaGeometry): [number, number] {
   if (lon < -180) lon += 360;
 
   return [lon, weightedY / totalWeight];
+}
+
+// Even-odd ray-casting against a single ring piece, in raw lon/lat degrees
+// (lon acts as x, lat as y -- same convention as computeArea/computeCentroid
+// above). Standard point-in-polygon algorithm, no antimeridian handling of
+// its own -- callers are expected to already have split the ring via
+// splitAtAntimeridian, same as fillGeometry/computeArea/computeCentroid.
+function rayCast(lon: number, lat: number, ring: Position[]): boolean {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i];
+    const [xj, yj] = ring[j];
+    if (yi > lat !== yj > lat && lon < ((xj - xi) * (lat - yi)) / (yj - yi) + xi) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+// Point-in-polygon test in raw lon/lat degrees. Reuses splitAtAntimeridian
+// per ring (same antimeridian-safety approach computeCentroid already uses)
+// and the same ring-index exterior(0)/hole(>0) convention fillGeometry/
+// computeArea use: a point counts as inside a polygon if it falls inside any
+// exterior piece and not inside any hole piece.
+export function pointInPolygon(lon: number, lat: number, geometry: AreaGeometry): boolean {
+  const polygons = geometry.type === "Polygon" ? [geometry.coordinates] : geometry.coordinates;
+
+  for (const rings of polygons) {
+    let insideExterior = false;
+    let insideHole = false;
+
+    rings.forEach((ring, ringIndex) => {
+      for (const piece of splitAtAntimeridian(ring)) {
+        if (rayCast(lon, lat, piece)) {
+          if (ringIndex === 0) insideExterior = true;
+          else insideHole = true;
+        }
+      }
+    });
+
+    if (insideExterior && !insideHole) return true;
+  }
+
+  return false;
+}
+
+// Linear scan with a cheap boundingBox prefilter before the exact (and more
+// expensive) pointInPolygon test -- fine even over ~4600 states since the
+// prefilter is just four number comparisons per entity. Inherits
+// computeBoundingBox's known antimeridian gap for Russia/Fiji (their box
+// spans nearly the whole globe) -- harmless here, since a too-wide box only
+// ever fails to *reject* early; it never produces a wrong hit, it just falls
+// through to the (still-correct) exact test for those two countries.
+export function findEntityAt(entities: Entity[], lon: number, lat: number): Entity | undefined {
+  return entities.find((entity) => {
+    const { minLon, minLat, maxLon, maxLat } = entity.boundingBox;
+    if (lon < minLon || lon > maxLon || lat < minLat || lat > maxLat) return false;
+    return pointInPolygon(lon, lat, entity.geometry as AreaGeometry);
+  });
 }
 
 export function buildCountryEntities(countries: GeoFeatureCollection): Entity[] {

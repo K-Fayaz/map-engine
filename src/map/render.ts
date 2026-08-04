@@ -19,6 +19,15 @@ export function project(lon: number, lat: number): [number, number] {
   return [x, y];
 }
 
+// Exact inverse of project() -- used by hit-testing (see MapCanvas.tsx) to
+// turn a world-space point (already recovered from screen space via
+// camera.ts's screenToWorld) back into lon/lat for pointInPolygon.
+export function unproject(x: number, y: number): [number, number] {
+  const lon = (x / WORLD_WIDTH) * 360 - 180;
+  const lat = 90 - (y / WORLD_HEIGHT) * 180;
+  return [lon, lat];
+}
+
 function toPolygons(geometry: AreaGeometry) {
   return geometry.type === "Polygon" ? [geometry.coordinates] : geometry.coordinates;
 }
@@ -69,14 +78,22 @@ function projectPoints(points: Position[]): number[] {
   return points.flatMap(([lon, lat]) => project(lon, lat));
 }
 
-export function fillGeometry(graphics: Graphics, geometry: AreaGeometry, fillColor: number) {
+// `alpha` defaults to 1 (fully opaque, existing behavior for land/country
+// fills) -- overridable for translucent highlight overlays (see
+// MapCanvas.tsx's hover/selection highlight).
+export function fillGeometry(
+  graphics: Graphics,
+  geometry: AreaGeometry,
+  fillColor: number,
+  alpha: number = 1,
+) {
   for (const rings of toPolygons(geometry)) {
     rings.forEach((ring, ringIndex) => {
       for (const piece of splitAtAntimeridian(ring)) {
         const points = projectPoints(piece);
         graphics.poly(points, true);
         if (ringIndex === 0) {
-          graphics.fill(fillColor);
+          graphics.fill({ color: fillColor, alpha });
         } else {
           graphics.cut();
         }
