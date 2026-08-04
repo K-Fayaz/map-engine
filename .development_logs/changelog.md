@@ -5,6 +5,290 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-04 — Phase 3b: Country/State Labels (feature-flagged — known issue remaining)
+
+### Summary
+Implemented roadmap Phase 3's label requirement: text labels for countries
+and states, revealed/swapped at the same `STATE_ZOOM_THRESHOLD` states
+already use, decluttered so overlapping labels don't render simultaneously.
+Landed the label-priority pieces (centroid anchoring, size-based
+abbreviation, greedy collision placement) cleanly, but country-level and
+state-level decluttering behave differently despite sharing the same code
+path — state-layer labels still show real overlap in dense clusters. Shipped
+behind a `VITE_SHOW_LABELS` env flag (default off) rather than blocking on
+that fix. Six real bugs found and fixed along the way, each one only
+surfacing once actually measured/inspected in chrome-devtools rather than
+assumed correct from the implementation.
+
+### Changes
+
+**New label entity + text (`entities.ts`, `render.ts`)**
+- `entities.ts`: `EntityType` gained `"label"`; `Entity` gained an optional
+  `metadata?: { area?: number }` bag (matches `architecture.md`'s generic
+  Entity shape, first real use of it). `computeArea` (shoelace formula, raw
+  lon/lat degrees, ring-index exterior/hole convention) — used as a cheap
+  size/importance proxy for both label collision priority and the
+  abbreviation threshold below. `computeCentroid` — antimeridian-aware
+  (reuses `render.ts`'s `splitAtAntimeridian`) area-weighted polygon
+  centroid, replacing the earlier bounding-box-center anchor.
+  `buildLabelEntities(entities)` derives one label per input entity;
+  generic over country/state, not two separate functions.
+- `render.ts`: `LabelText` (extends Pixi `BitmapText`, not `Text` — see bug
+  #1), positioned once at its centroid and never repositioned (rides
+  `worldContainer`'s transform via normal Pixi parent-child composition).
+  `counterScaleLabelLayer` cancels the inherited zoom stretch so text stays
+  a constant screen size (see bug #3 for why this must apply per-label, not
+  per-layer). Shared `BitmapFont` installed lazily once, character set
+  derived by scanning every actual label name in the vendored data (168
+  chars, all romanized/Latin script — no CJK/Cyrillic needed for any
+  country in this dataset).
+
+**Label-priority ranking & abbreviation (`entities.ts`)**
+- Countries below `ABBREVIATE_COUNTRY_BELOW_AREA` (picked by eyeballing
+  real areas, tunable) show their ISO alpha-3 code (e.g. "TTO") instead of
+  full name — shrinks the label itself in exactly the dense-cluster cases
+  (Caribbean, Balkans, Persian Gulf) where collision placement has the
+  least room to work with. `numericToAlpha3` derived at runtime from the
+  existing `iso-alpha3-to-numeric.json` (inverted, not a second vendored
+  file). States don't get this: Natural Earth's admin-1 data has no
+  universal short-code equivalent to ISO alpha-3, and the `postal`/
+  `code_hasc` fields that did exist were stripped when `states-10m.json`
+  was vendored (Phase 3a).
+
+**Viewport culling + collision placement (`camera.ts`, `labelLayout.ts` new)**
+- `camera.ts`: `viewportWorldBounds` — the inverse of the transform
+  `MapCanvas.tsx`'s ticker applies each frame, giving the world-space
+  rectangle currently on screen. The one function in this file that needs
+  `baseScaleX`/`baseScaleY` explicitly (everything else here deliberately
+  stays in screen-content space where the per-axis stretch cancels out and
+  never needs to appear).
+- `labelLayout.ts` (new, pure, no Pixi/DOM): `placeLabelsWithoutOverlap` —
+  greedy label placement (sort by importance descending, keep a candidate
+  only if its screen-space box doesn't overlap a higher-priority box
+  already kept). Same core algorithm Mapbox/Maplibre/Google Maps use for
+  label decluttering. Unit-tested in isolation against hand-built
+  overlapping/chained candidate sets before wiring into the app.
+
+**MapCanvas.tsx wiring**
+- `countryLabelsLayer` / `stateLabelsLayer`: label *objects* are all built
+  upfront, but the layers themselves start empty — `declutterLabels()` is
+  what actually attaches/detaches labels as real Pixi children, not just a
+  `.visible` toggle (see bug #5). Visibility swap reuses the existing
+  `STATE_ZOOM_THRESHOLD`/`setVisibleAboveZoom`/`setVisibleAtOrBelowZoom`
+  pattern from Phase 3a's states layer.
+- `declutterLabels()` debounced via `scheduleLabelDeclutter` (150ms),
+  triggered from wheel *and* pointer-drag — unlike the LOD check, panning
+  alone changes which labels are candidates, so it can't reuse
+  `scheduleLodCheck`'s wheel-only trigger.
+- `VITE_SHOW_LABELS` (`.env`, default `"false"`; override via gitignored
+  `.env.local`): build-time flag skipping label construction entirely when
+  off, not just hiding the result — added specifically because of the
+  unresolved state-layer overlap issue below, so a fresh clone doesn't show
+  it by default.
+
+**Bugs found and fixed, in order**
+1. **State label reveal cost ~1.87s of blocking work** (measured via
+   chrome-devtools long-task capture on first zoom-in), vs ~660ms for the
+   same gesture with labels absent. Root cause: Pixi's regular `Text`
+   rasterizes each distinct string to its own canvas + GPU texture on
+   first render — cheap for 241 always-visible country labels (~500ms at
+   mount) but expensive the moment ~4600 hidden state labels are revealed
+   at once. Fixed by switching to `BitmapText` with one shared,
+   pre-generated glyph atlas (character set derived from the real data,
+   not guessed) — reveal cost dropped back to the ~800ms baseline with no
+   labels at all.
+2. **`GL_INVALID_OPERATION: glDrawElements: Insufficient buffer size`**,
+   surfaced by the `BitmapText` switch. Root cause: `React.StrictMode`'s
+   dev-mode double-invoke (mount → cleanup → mount again) combined with
+   Pixi's pooled batcher buffers — `app.destroy()` without
+   `releaseGlobalResources: true` leaves the second `Application` instance
+   with a stale, undersized buffer inherited from the first. Known Pixi
+   issue (https://github.com/pixijs/pixijs/discussions/11678). Fixed by
+   passing `releaseGlobalResources: true` at both destroy call sites.
+3. **Labels rendered off-screen, silently.** The original design
+   counter-scaled the shared label *layer* (a `Container`) to cancel zoom
+   stretch. Wrong: a Container's `position` is transformed by its own
+   `scale` before its parent's, so scaling the layer doesn't just shrink
+   rendered text size — it also shrinks every child's *stored position*
+   back toward the layer's local origin, collapsing all labels toward one
+   point (measured: Gujarat's label computed at screen coordinates
+   (-19260, -5465) against a 1920×1029 canvas). Fixed by counter-scaling
+   each `LabelText` individually instead — a node's own scale only affects
+   its own rendering size, not its own position.
+4. **Cluttered, overlapping labels everywhere** (user-reported from a live
+   screenshot, not caught by earlier automated checks). Root cause:
+   `declutterLabels()` called Pixi's `getBounds()` immediately after
+   `layer.addChild(label)`, in the same synchronous tick — Pixi's
+   transform/bounds system updates lazily during its own render cycle, not
+   synchronously on `addChild`, so `getBounds()` returned `(0,0,0,0)` for
+   every candidate. Two zero-size boxes at the same origin never register
+   as overlapping (`a.x < b.x + b.width` is `0 < 0` = false), so the
+   greedy algorithm correctly concluded "nothing collides" and kept 240 of
+   241 candidates — confirmed the *algorithm* itself was correct by
+   feeding it the real (manually-measured) box data in isolation, where it
+   correctly reduced 26 overlapping Caribbean candidates to 5. Fixed by
+   computing each candidate's screen-space box manually (world position +
+   camera state, the same trusted data `viewportWorldBounds` uses) instead
+   of relying on `getBounds()`, using `label.width`/`label.height` (local
+   quantities, correct immediately regardless of parent attachment) for
+   size, with an explicit counter-scale applied before reading them (a
+   label attached for the first time this cycle hasn't been corrected by
+   the ticker's per-frame pass yet).
+5. **Antimeridian-crossing centroid badly wrong for scattered-island
+   countries.** Fiji's centroid computed at 165°E — nowhere near any of
+   its actual islands (all 174.6°E to -178.7°). Root cause: pieces split at
+   the antimeridian can land on opposite *numeric* sides of it (e.g. a
+   piece centered at +179 and another at -179.9, actually only ~1° apart
+   on the globe); naively averaging raw longitudes pulls the result toward
+   0 — the "short way" through the date line numerically, not
+   geographically. Countries with one dominant landmass (Russia's Siberia,
+   the US's CONUS) barely show this distortion, since the dominant piece's
+   weight swamps it; Fiji has ~20 comparably-sized islands scattered evenly
+   across the date line with nothing to swamp it. Fixed by normalizing
+   every piece's longitude relative to the first piece seen (±360° shift
+   to keep all pieces within 180° of each other) before combining, then
+   wrapping the final result back into [-180, 180].
+
+Also restructured label layers to `addChild`/`removeChild` only whatever
+survives culling + placement each cycle, rather than permanently parenting
+all label objects and toggling `.visible` — motivated by a measured
+several-hundred-ms one-time Pixi-internal cost tied to a large container's
+child count. Later isolated testing (matching Phase 2's own two-stage
+LOD/state methodology) showed that specific cost was actually a
+continuous-burst testing artifact, not the child-count itself — but the
+restructuring is kept regardless as reasonable practice, independent of
+whether it was the fix for that particular measurement.
+
+### Decisions
+- **Centroid, not bounding-box center, for label anchors** — cheap
+  (shoelace-based, similar math to `computeArea`), fixes the common cases
+  (Chile, Norway, Vietnam) and the antimeridian cases (Russia, USA, Fiji)
+  that bbox-center got badly wrong. Not a true "pole of inaccessibility"
+  (guaranteed-inside-the-shape) algorithm — can still land outside the
+  polygon for unusually concave/crescent shapes. Deferred as further
+  polish if that's ever visibly a problem.
+- **Abbreviation is size-based at build time, not adaptive.** Small
+  countries always display their alpha-3 code; large ones always show the
+  full name. Considered (and rejected for now) an adaptive "try full name,
+  fall back to abbreviation on collision" design — better visual result,
+  but requires teaching `placeLabelsWithoutOverlap` about multiple text
+  variants per entity, real added complexity to the algorithm itself.
+- **BitmapText over Text for all labels**, not just the ones under time
+  pressure — one shared atlas, no per-string canvas rasterization. See bug
+  #1.
+- **Shipped behind `VITE_SHOW_LABELS=false` by default** rather than
+  holding the whole feature back for the unresolved issue below — the
+  underlying code (entities, rendering primitives, layout algorithm) is
+  built and mostly verified; only state-layer decluttering specifically is
+  known-broken.
+
+### Known issue — not yet root-caused
+State-layer labels (revealed past `STATE_ZOOM_THRESHOLD`) still show real,
+measured overlap in dense clusters — 269 overlapping box pairs counted in
+one Caribbean/Hispaniola view (e.g. Haiti/Dominican Republic provinces,
+British Virgin Islands' individual islands). This is *after* bug #4's
+`getBounds()` fix landed, and country-layer labels verified fully clean
+(zero overlaps) using the identical `declutterLabels()` code path — so the
+bug, whatever it is, is specific to the state layer's data or scale (many
+more candidates, much smaller individual boxes, all full names with no
+abbreviation) rather than the shared logic itself. Investigation was
+mid-flight (had just pulled live candidate/kept-box data via a temporary
+debug hook, not yet diagnosed) when this was paused to ship the env flag
+instead. Pick back up by re-adding that inspection: dump
+`stateLabelsLayer.children`'s actual boxes after a settled decluttering
+pass in a dense region and check for genuine pairwise overlaps in the
+*data* (not just visually) — that'll show whether it's still a stale-bounds
+class of bug, a candidate-volume/threshold issue, or something else.
+
+### Deferred / not yet implemented
+- Fixing the state-layer overlap issue above.
+- State label abbreviation (no universal short-code data source currently
+  vendored — see Changes).
+- Label collision against anything other than same-layer labels (e.g.
+  avoiding country borders/fills, other future layers).
+- Fade in/out transitions for labels appearing/disappearing — currently an
+  instant pop.
+- Cities, rivers, lakes (Phase 3c/3d, not started).
+
+---
+
+## 2026-08-04 — Phase 3a: States/Provinces
+
+### Summary
+Implemented the first slice of roadmap Phase 3 (geographic detail): state/
+province boundaries, revealed above a new zoom threshold, following the
+same per-entity-object pattern countries already established in Phase 1.
+Required sourcing and vendoring an entirely new dataset (world-atlas has no
+admin-1 data), plus a country↔state linkage step across two different ID
+systems. Verified via chrome-devtools across multiple geometry edge cases
+(India, Indonesia's archipelago, Russia's antimeridian-adjacent Far East)
+and confirmed no measurable performance regression despite ~4600 new
+entities — the "build everything upfront" pattern from Phase 1/2 held up
+at this scale too.
+
+### Changes
+
+**Data sourcing (`src/map/data/`, new)**
+- `states-10m.json`: Natural Earth's 1:10m admin-1 layer, sourced from the
+  `nvkelso/natural-earth-vector` GeoJSON mirror (avoids a manual shapefile
+  conversion step), simplified 10% via `mapshaper`, trimmed to just
+  `name`/`adm0_a3`/`admin` properties (dropped ~90 unused columns the raw
+  file carried). 4596 features, `id` set from Natural Earth's unique
+  `adm1_code`.
+- `iso-alpha3-to-numeric.json`: standard ISO 3166-1 country list (249
+  entries), mapping alpha-3 codes (e.g. `"ARG"`) to zero-padded numeric
+  codes matching `world-atlas`'s own country `id` format exactly (e.g.
+  `"032"`) — bridges Natural Earth's `adm0_a3` (alpha-3) linkage field
+  against `world-atlas`'s numeric-keyed countries.
+
+**Entity model (`entities.ts`)**
+- `EntityType` gained `"state"`; `Entity` gained optional `parentId`
+  (containing entity — a state's country). `buildStateEntities(states,
+  countries)` joins each state to its parent country via the ISO lookup
+  table above; states that don't resolve (disputed territories like
+  Kosovo/Western Sahara, micro-states absent from `world-atlas`'s
+  241-country set) are still built as entities with `parentId: undefined`
+  and a console warning, not silently dropped — Phase 4 selection can
+  decide later whether an orphaned state is selectable on its own.
+  Verified: 231/251 distinct country codes in the vendored data join
+  cleanly, covering 4519/4596 (98.3%) of individual state features.
+
+**Rendering (`render.ts`, `MapCanvas.tsx`)**
+- `strokeGeometry` gained an optional `color` parameter (default unchanged)
+  so state borders can render in a lighter, subordinate color to country
+  borders — `pixelLine` (used for zoom-invariant border width) ignores
+  `width` entirely, so color is the only stylable differentiator available.
+  `CountryContainer` reused as-is for states, no rename — already generic
+  over any `Entity`.
+- `statesLayer`: built once at mount like `countriesLayer`, border-only (no
+  fill — the country/land fill underneath already colors the area).
+  `STATE_ZOOM_THRESHOLD = 6` (deeper than `LOD_ZOOM_THRESHOLD = 4`, since
+  states are a finer detail level than 10m country fill).
+  `setVisibleAboveZoom` toggles the whole layer each tick off the eased
+  camera zoom — far simpler than the LOD swap's debounce, since states
+  have only one resolution and toggling visibility needs no data rebuild.
+
+### Decisions
+- **States ship at a single resolution (10m) only** — no 50m/10m LOD pair
+  like countries have. Natural Earth's 50m admin-1 layer only has data for
+  4 countries (US, Canada, Brazil, Australia); everywhere else is blank at
+  that scale. States only ever become visible at a zoom level where 10m
+  country detail is already showing anyway.
+- **Unmatched states (disputed territories, micro-states) are kept, not
+  dropped**, with `parentId: undefined` and a warning — same
+  don't-silently-drop philosophy as elsewhere in this codebase.
+- **`CountryContainer` reused for states without renaming** — avoids
+  renaming something that doesn't need it just because a second entity
+  type uses it now.
+
+### Deferred / not yet implemented
+- State fill (no fill color differentiation from country fill yet — only
+  borders).
+- Cities, rivers, lakes (Phase 3c/3d).
+- Labels for states/countries — landed next, see Phase 3b above.
+
+---
+
 ## 2026-08-02 — Phase 2: Camera Navigation + LOD Data Swap
 
 ### Summary
