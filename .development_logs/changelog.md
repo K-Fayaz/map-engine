@@ -5,6 +5,98 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-05 — India boundary corrected to include Aksai Chin / PoK
+
+### Summary
+User-reported: `world-atlas`'s India polygon (the same one most non-Indian
+basemaps ship) excludes Aksai Chin and Pakistan-administered Kashmir/
+Gilgit-Baltistan from India's fill/border, drawing them as part of China's
+and Pakistan's polygons instead. This is the internationally-common line,
+but doesn't match India's official claimed boundary, which is a legal
+requirement for maps distributed for/in India (2021 Geospatial Guidelines) —
+and the product owner is shipping this for an Indian audience. Fixed by
+patching India's country-level geometry only; explicitly not a "neutral
+default," a deliberate one-sided choice for this product, made with the
+tradeoff understood (see Decisions).
+
+### Changes
+
+**New vendored data (`src/map/data/`)**
+- `india-boundary-50m.json` / `india-boundary-10m.json`: India's outline
+  including Aksai Chin, Pakistan-occupied Kashmir, and the Shaksgam Valley.
+  Sourced from `datameet/maps`' `Country/india-composite.geojson` (CC-0;
+  built from Survey-of-India-aligned sources plus US State Dept LSIB and
+  Pakistan admin boundaries specifically for the disputed pieces). Raw file
+  is ~253k points across 80 polygons — simplified via `mapshaper` (3% for
+  10m, 0.6% for 50m) to land close to `world-atlas`'s own existing India
+  point counts at each resolution (~7700 / ~1500) so it doesn't stand out in
+  detail level from every other country at the same zoom, same reasoning as
+  the states-10m.json vendoring in Phase 3a.
+
+**`loadWorldData.ts`**
+- After building the `countries` FeatureCollection at each resolution, looks
+  up India by its ISO numeric id (`"356"`) and replaces its `geometry` with
+  the vendored corrected boundary. Only India's feature is touched —
+  Pakistan's and China's polygons are left exactly as `world-atlas` ships
+  them, so they still underlap India's claimed territory in the disputed
+  region.
+
+**`MapCanvas.tsx`**
+- Since Pakistan's/China's polygons weren't clipped, India's fill/stroke
+  needs to paint on top of theirs in the overlap to read correctly. India's
+  `CountryContainer` is re-added to `countriesLayer` right after the initial
+  build loop — Pixi's `addChild` moves an already-attached child to the end
+  of its parent's children (top of paint order), so no polygon clipping was
+  needed to make this look right.
+
+**`entities.ts`**
+- Natural Earth's admin-1 data has one Kashmir-region feature keyed by a
+  non-standard pseudo-country code (`adm0_a3: "KAS"`, "Siachen Glacier") that
+  isn't a real ISO 3166-1 alpha-3 code and therefore isn't in the vendored
+  `iso-alpha3-to-numeric.json` — it was falling into `buildStateEntities`'s
+  unmatched/orphan bucket (`parentId: undefined`). Added a small
+  `NATURAL_EARTH_PSEUDO_CODES` map inside `entities.ts` joining `"KAS"` to
+  India's numeric id, rather than polluting the ISO table (which stays a
+  faithful copy of the real standard) with a code that isn't actually part
+  of it.
+
+### Decisions
+- **Only India's polygon was patched, not Pakistan's/China's.** This
+  encodes a specific, one-sided territorial position (India's official
+  claim) rather than a neutral "disputed territory" convention — done
+  deliberately, at the product owner's explicit request, for an Indian
+  audience, not as a default anyone should assume is "correct" for other
+  contexts. If this project is ever distributed outside that context,
+  revisit whether that's still the right call.
+- **Country-level fix only; state-level (`states-10m.json`) left as-is.**
+  Jammu & Kashmir and Ladakh already resolved to India correctly before this
+  fix (Natural Earth's admin-1 data already attributed them there). Aksai
+  Chin and PoK have no corresponding Indian admin-1 (state) feature in the
+  vendored data at all, so the state *border* layer still shows a gap in
+  those areas even though the country fill/border now covers them — states
+  render border-only with no fill (Phase 3a decision), so this reads as a
+  minor missing-internal-lines gap, not a wrong-color gap. Not fixed here;
+  would need sourcing/vendoring admin-1-equivalent boundaries for those
+  areas specifically if it's ever visibly a problem.
+- **Simplified to match existing point-count budget, not kept full-detail.**
+  Consistent with Phase 2's country-complexity lesson (a handful of
+  disproportionately detailed polygons cost real tessellation time) — no
+  reason for India alone to be ~30x more detailed than every neighboring
+  country at the same zoom.
+
+### Deferred / not yet implemented
+- No admin-1 (state-level) boundary data for Aksai Chin / PoK — state layer
+  still shows a border gap there (see Decisions).
+- This patch isn't wired into any "refresh vendored data" script — if
+  `world-atlas` is ever upgraded, this substitution still applies at load
+  time regardless (it patches the in-memory feature after loading, not the
+  vendored `world-atlas` files themselves), so it should survive a
+  `world-atlas` version bump without needing to be reapplied. Worth
+  double-checking against a fresh `world-atlas` release if the country id
+  scheme or feature shape ever changes upstream.
+
+---
+
 ## 2026-08-05 — Zoom/drag sluggishness after state reveal (steady-state Pixi overhead)
 
 ### Summary

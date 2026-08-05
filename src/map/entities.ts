@@ -305,6 +305,15 @@ export function buildCountryEntities(countries: GeoFeatureCollection): Entity[] 
 // entities with `parentId: undefined` and a console warning -- Phase 4
 // selection can decide later whether an orphaned state is selectable on its
 // own.
+// Natural Earth uses "KAS" as a non-standard pseudo-country code for its
+// Kashmir/Siachen Glacier admin-1 feature -- not a real ISO 3166-1 alpha-3
+// code, so it doesn't belong in the vendored iso-alpha3-to-numeric.json
+// (that table stays a faithful copy of the real standard). Handled here
+// instead, joining it to India to match the corrected country-level
+// boundary in loadWorldData.ts (see that file's comment for the full
+// rationale).
+const NATURAL_EARTH_PSEUDO_CODES: Record<string, string> = { KAS: "356" };
+
 export function buildStateEntities(
   states: StateGeoFeatureCollection,
   countries: GeoFeatureCollection,
@@ -314,7 +323,7 @@ export function buildStateEntities(
 
   return states.features.map((f) => {
     const alpha3 = f.properties.adm0_a3;
-    const numericId = alpha3 ? codeMap[alpha3] : undefined;
+    const numericId = alpha3 ? (codeMap[alpha3] ?? NATURAL_EARTH_PSEUDO_CODES[alpha3]) : undefined;
     const parentId = numericId && countryIds.has(numericId) ? numericId : undefined;
 
     if (!parentId) {

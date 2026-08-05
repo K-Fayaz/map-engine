@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { Application, Container, Graphics } from "pixi.js";
-import { loadWorldData, type Resolution, type AreaGeometry } from "./loadWorldData";
+import { loadWorldData, INDIA_COUNTRY_ID, type Resolution, type AreaGeometry } from "./loadWorldData";
 import { loadStatesData } from "./loadStatesData";
 import {
   buildCountryEntities,
@@ -204,6 +204,22 @@ export function MapCanvas() {
         const initialWorld = loadWorldData("50m");
         const borderEntities = buildCountryEntities(initialWorld.countries);
 
+        // India's patched boundary (see loadWorldData.ts) overlaps Pakistan's
+        // and China's unclipped polygons in the Aksai Chin/PoK region.
+        // findEntityAt (entities.ts) resolves overlaps by returning the
+        // first array match, not by paint order -- without this, a click in
+        // that region would silently select Pakistan (whichever comes first
+        // in world-atlas's raw feature order), contradicting the visual
+        // (India painted on top, see the countriesLayer reorder below).
+        // Moving India to the front makes it win hit-testing too, for any
+        // point, at negligible cost (one array splice at mount, not
+        // per-hit-test).
+        const indiaEntityIndex = borderEntities.findIndex((e) => e.id === INDIA_COUNTRY_ID);
+        if (indiaEntityIndex > 0) {
+          const [indiaEntity] = borderEntities.splice(indiaEntityIndex, 1);
+          borderEntities.unshift(indiaEntity);
+        }
+
         const worldContainer = new Container();
 
         const land = new Graphics();
@@ -220,6 +236,16 @@ export function MapCanvas() {
           return c;
         });
         worldContainer.addChild(countriesLayer);
+
+        // India's patched boundary (see loadWorldData.ts) claims territory
+        // that overlaps Pakistan's and China's unpatched polygons in the
+        // Kashmir/Aksai Chin region. Pixi's addChild moves an already-added
+        // child to the end of its parent's children, i.e. the top of paint
+        // order -- re-adding India here (after every country is already in
+        // the layer) makes its fill/stroke the one that wins visually in the
+        // overlap, without needing to clip Pakistan's/China's geometry.
+        const indiaContainer = countryContainers.find((c) => c.entity.id === INDIA_COUNTRY_ID);
+        if (indiaContainer) countriesLayer.addChild(indiaContainer);
 
         // States sit above countries in the layer stack (see
         // architecture.md's layer list). They only ship at one resolution
