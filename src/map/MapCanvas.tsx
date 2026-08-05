@@ -71,6 +71,15 @@ const LOD_ZOOM_THRESHOLD = 4;
 const LOD_HYSTERESIS = 0.85;
 const LOD_DEBOUNCE_MS = 150;
 
+// Point-count budget per animation frame during a chunked LOD fill rebuild
+// (see applyFill) -- tuned against measured per-country point counts at 10m
+// (Canada alone is ~68k points; most countries are under 2k). Small enough
+// that a chunk full of average-complexity countries stays cheap, while
+// single outliers (Canada, Russia, USA, ...) each still get their own frame
+// rather than a fixed per-frame *count* accidentally grouping several of
+// them together.
+const FILL_CHUNK_WEIGHT_BUDGET = 6000;
+
 // Same debounce duration as LOD_DEBOUNCE_MS, but a logically separate
 // trigger: label decluttering needs to re-run on *panning* too (the
 // viewport shifts, so which labels are candidates changes), unlike the LOD
@@ -88,13 +97,25 @@ const STATE_ZOOM_THRESHOLD = 6;
 // this distinction since it had nothing else pointer events could mean.
 const CLICK_MOVE_THRESHOLD_PX = 4;
 
-// Selection reads as stronger than hover: brighter stroke, more opaque
-// fill tint. Both are translucent so the underlying country/state fill and
+// Selection reads as stronger than hover: hover is a stroke-only outline
+// (see drawHighlights), selection additionally gets a translucent fill tint,
+// still see-through enough that the underlying country/state fill and
 // borders stay visible underneath.
 const HOVER_COLOR = 0xffd54a;
-const HOVER_FILL_ALPHA = 0.15;
 const SELECTION_COLOR = 0xffa000;
 const SELECTION_FILL_ALPHA = 0.3;
+
+// Cheap proxy for how expensive a polygon is to tessellate (see applyFill's
+// chunk-weight budgeting) -- just the raw coordinate count across every
+// ring, no antimeridian-splitting or area math needed for this purpose.
+function countPoints(geometry: AreaGeometry): number {
+  const polygons = geometry.type === "Polygon" ? [geometry.coordinates] : geometry.coordinates;
+  let total = 0;
+  for (const rings of polygons) {
+    for (const ring of rings) total += ring.length;
+  }
+  return total;
+}
 
 // Toggles a layer's visibility based on zoom. Unlike the LOD fill swap
 // above, nothing gets rebuilt here, so this is cheap enough to run every
@@ -291,10 +312,17 @@ export function MapCanvas() {
           hoverGraphic.clear();
           if (hoveredEntityId && hoveredEntityId !== selectedEntityId) {
             const hovered = findById(hoveredEntityId);
+            // Stroke only, no fill tint -- unlike selection, hover fires on
+            // essentially every pointermove (including during a zoom
+            // gesture, since the entity under a fixed screen point changes
+            // as zoom changes), and fillGeometry's poly-fill triggers real
+            // GPU tessellation (Pixi's earcut) per call. A fill here was
+            // measured adding real extra long-task time during zoom (see
+            // changelog) on top of the LOD fill rebuild's own cost --
+            // strokeGeometry's pixelLine needs no tessellation, so it stays
+            // cheap regardless of how often hover changes.
             if (hovered) {
-              const geometry = hovered.geometry as AreaGeometry;
-              fillGeometry(hoverGraphic, geometry, HOVER_COLOR, HOVER_FILL_ALPHA);
-              strokeGeometry(hoverGraphic, geometry, HOVER_COLOR);
+              strokeGeometry(hoverGraphic, hovered.geometry as AreaGeometry, HOVER_COLOR);
             }
           }
         }
@@ -303,7 +331,23 @@ export function MapCanvas() {
 
         let resolution: Resolution = "50m";
 
-        function applyFill(nextResolution: Resolution) {
+        // Guards a chunked run below against a second applyFill call
+        // superseding it mid-flight (e.g. rapid up/down zoom crossing
+        // LOD_ZOOM_THRESHOLD more than once before the first run finishes)
+        // -- bumped on every call, each run only keeps writing while its own
+        // token is still the current one.
+        let fillRunToken = 0;
+
+        // Rebuilds land + every country's fill for the given resolution.
+        // `chunked` spreads the ~241 separate Graphics.fill() calls (each
+        // one a real Pixi/earcut polygon tessellation, not a cheap redraw)
+        // across several animation frames instead of one synchronous pass --
+        // measured that single pass blocking the main thread for 600ms+ when
+        // a LOD swap fires mid-zoom (see changelog). The initial mount-time
+        // call below stays unchunked (budget = Infinity, everything in one
+        // chunk) so the very first paint still shows a complete map rather
+        // than one that visibly fills in over a few frames.
+        function applyFill(nextResolution: Resolution, chunked: boolean = false) {
           resolution = nextResolution;
           const world = resolution === "50m" ? initialWorld : loadWorldData(resolution);
 
@@ -317,13 +361,48 @@ export function MapCanvas() {
               (e) => [e.id, e],
             ),
           );
-          for (const c of countryContainers) {
+
+          const myToken = ++fillRunToken;
+
+          // Country complexity (point count) is extremely skewed -- at 10m,
+          // Canada alone (~68k points) is worth more tessellation work than
+          // roughly the bottom 150 countries combined (measured; see
+          // changelog). A fixed per-frame *count* risks packing several of
+          // these heavy outliers into one chunk purely by chance (measured
+          // that going wrong too). Sorting heaviest-first and packing by a
+          // point-count budget instead gives each big country roughly its
+          // own frame while still batching the many cheap ones together.
+          const items = countryContainers.map((c) => {
             const match = fillEntities.get(c.entity.id);
-            c.fill.clear();
-            // Safe: same reasoning as above -- fillEntities is built from
-            // buildCountryEntities, never label entities.
-            if (match) fillGeometry(c.fill, match.geometry as AreaGeometry, LAND_COLOR);
+            const weight = match ? countPoints(match.geometry as AreaGeometry) : 0;
+            return { c, match, weight };
+          });
+          if (chunked) items.sort((a, b) => b.weight - a.weight);
+
+          const budget = chunked ? FILL_CHUNK_WEIGHT_BUDGET : Infinity;
+          let index = 0;
+
+          function processChunk() {
+            if (cancelled || myToken !== fillRunToken) return;
+            let chunkWeight = 0;
+            let processedAny = false;
+            while (index < items.length) {
+              const { c, match, weight } = items[index];
+              if (processedAny && chunkWeight + weight > budget) break;
+              c.fill.clear();
+              // Safe: same reasoning as above -- fillEntities is built from
+              // buildCountryEntities, never label entities.
+              if (match) fillGeometry(c.fill, match.geometry as AreaGeometry, LAND_COLOR);
+              chunkWeight += weight;
+              processedAny = true;
+              index++;
+            }
+            if (index < items.length) {
+              requestAnimationFrame(processChunk);
+            }
           }
+
+          processChunk();
         }
 
         applyFill("50m");
@@ -460,12 +539,12 @@ export function MapCanvas() {
             lodTimeout = null;
             if (cancelled) return;
             if (resolution === "50m" && current.zoom > LOD_ZOOM_THRESHOLD) {
-              applyFill("10m");
+              applyFill("10m", true);
             } else if (
               resolution === "10m" &&
               current.zoom < LOD_ZOOM_THRESHOLD * LOD_HYSTERESIS
             ) {
-              applyFill("50m");
+              applyFill("50m", true);
             }
           }, LOD_DEBOUNCE_MS);
         };

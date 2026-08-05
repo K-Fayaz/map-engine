@@ -5,6 +5,120 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-05 — Zoom performance fix (hover overlay + LOD fill rebuild)
+
+### Summary
+User-reported stutter on zoom after Phase 4 landed. Reproduced via
+chrome-devtools (`PerformanceObserver` long tasks + full trace capture with
+CPU-profile call trees, same methodology as Phase 2), which surfaced two
+separate causes rather than one: a real Phase 4 regression, plus a much
+larger pre-existing Phase 2 cost that had never been profiled at this
+granularity before. Fixed both. Net result on the same synthetic zoom-burst
+benchmark (20 wheel ticks + cursor jitter, crossing both
+`LOD_ZOOM_THRESHOLD` and `STATE_ZOOM_THRESHOLD`): worst single long task
+677ms → ~300-390ms, total blocked time across the burst ~1228ms → ~700-800ms.
+Not fully eliminated — see Known remaining cost below.
+
+### Diagnosis
+Long-task profiling (call-tree self-time restricted to the actual long-task
+windows, not whole-trace aggregates, which mixes in irrelevant idle time)
+showed:
+1. **New, from Phase 4**: `drawHighlights()`'s hover path called
+   `fillGeometry()` (real Pixi/earcut polygon tessellation, not a cheap
+   redraw) on every distinct `hoveredEntityId` change, with no debounce.
+   During a zoom gesture the entity under a fixed screen point changes as
+   zoom changes, so this fired repeatedly, adding measurable extra blocked
+   time on top of cause #2 (confirmed by A/B: wheel-only vs. wheel+cursor-
+   jitter bursts against the pre-fix code — hover added ~250ms of total
+   blocked time across the burst).
+2. **Pre-existing, from Phase 2**: `applyFill()`'s LOD swap re-tessellates
+   land + all ~241 countries' fill synchronously in one pass whenever zoom
+   crosses `LOD_ZOOM_THRESHOLD`. Confirmed via a wheel-only repro (hover
+   code never fires) showing the *same* magnitude of long tasks as the
+   hover case, dominated by `isEarHashed`/`triangulateWithHoles`/
+   `earcutLinked` (Pixi's earcut triangulation) and `projectPoints`. Phase
+   2's changelog measured this at "47ms(50m)/115ms(10m)" -- but that was
+   JS-only timing done *outside* the live scene; it never captured the real
+   in-scene tessellation/GPU-upload cost, which is what's actually
+   expensive (600ms+ in one shot).
+   Per-country profiling (isolated, via dynamic `import()` of the
+   dev-server-served modules -- same technique Phase 2 used) found country
+   complexity at 10m is extremely skewed: Canada alone is ~68k points
+   (12.5% of the ~545k total across all 255 countries); the top 15
+   countries hold ~56% of all points. A naive fixed-count chunk risks
+   randomly clustering several of these outliers into one frame.
+
+### Changes
+
+**`MapCanvas.tsx` -- hover highlight (fix for cause #1)**
+- `drawHighlights()`'s hover branch now only calls `strokeGeometry()`
+  (`pixelLine`, GPU-native, no tessellation) -- dropped the `fillGeometry()`
+  tint call entirely for hover. Selection is unaffected (keeps both fill
+  tint + stroke) since it only changes on click, not on every pointermove.
+  `HOVER_FILL_ALPHA` constant removed (no longer used).
+
+**`MapCanvas.tsx` -- chunked LOD fill rebuild (fix for cause #2)**
+- `applyFill(nextResolution, chunked = false)` gained a second parameter.
+  The two `scheduleLodCheck` call sites (actual LOD swaps during
+  interaction) now pass `chunked: true`; the one-time mount call stays
+  `chunked: false` (unchunked) so the very first paint still shows a
+  complete map rather than one that visibly fills in over several frames.
+- New `countPoints(geometry)` (coordinate count across all rings -- a cheap
+  proxy for tessellation cost, no antimeridian-splitting or area math
+  needed for this purpose) and `FILL_CHUNK_WEIGHT_BUDGET = 6000`. When
+  chunked, countries are sorted heaviest-first by point count and packed
+  into chunks by a point-count budget (not a fixed item count) -- processed
+  across animation frames via `requestAnimationFrame`, guarded by a
+  `fillRunToken` so a superseding `applyFill` call (rapid up/down zoom
+  crossing the threshold more than once) invalidates any still-running
+  chunk loop rather than letting two runs interleave their writes.
+  Heaviest-first + budget-based packing (rather than fixed-count chunks)
+  specifically to avoid randomly clustering multiple expensive outliers
+  (Canada, Russia, USA, ...) into the same frame -- tried fixed-count
+  chunking first (sizes 40 and 8), both measured *worse* or barely better
+  than an unchunked baseline in spots, because whichever few heavy
+  countries happened to land in the same chunk dominated that frame's cost
+  regardless of how many *other* (cheap) countries were also in it.
+
+### Decisions
+- **Debounce/throttle was considered and rejected for the hover fix** --
+  dropping the fill entirely is simpler and removes the tessellation cost
+  at its source rather than just spacing it out; hover stays visually
+  instant (stroke redraw is cheap) rather than trading responsiveness for
+  reduced frequency.
+- **Point count (not area or a fixed per-country cost model) as the LOD
+  chunk-weight proxy** -- cheap to compute (no antimeridian handling
+  needed, unlike `computeArea`/`computeCentroid`), and correlates well
+  enough with the actual bottleneck (Pixi's earcut triangulation, whose
+  cost scales with vertex count) to be useful for chunk sizing without
+  needing a more expensive/precise cost model.
+- **Initial mount fill stays unchunked** -- an incrementally-filling-in map
+  on first load reads as broken/slow in a different, more visible way than
+  a brief zoom stutter; the one-time mount cost was already accepted
+  behavior before this fix and wasn't the reported problem.
+
+### Known remaining cost
+Chunking reduces but doesn't eliminate the LOD swap's cost. Two residual
+sources measured even after fixing, both bounded by real per-item Pixi
+tessellation cost rather than by chunk *composition*:
+- A handful of single outliers (Canada, Russia, ...) are expensive enough
+  alone that isolating them into their own frame still leaves that one
+  frame costing ~300-400ms -- a hard floor for this approach, since no
+  amount of chunking helps once an item's own cost exceeds a frame budget
+  by itself.
+- Some chunks of many small-but-numerous countries still show real GC
+  pressure (temporary array allocation from `projectPoints`/
+  `splitAtAntimeridian` inside `fillGeometry`), moderate but non-zero.
+
+Not pursued further this pass -- would need a deeper architectural change
+(pre-building both resolutions' fill `GraphicsContext`s once at mount and
+swapping a reference instead of re-tessellating at LOD-swap time, trading
+a larger one-time mount cost for zero runtime re-tessellation ever; or
+simplifying/caching the specific heavy outliers' geometry) rather than
+tuning this chunking scheme further.
+
+---
+
 ## 2026-08-04 — Phase 4: Interaction (country + state; city deferred)
 
 ### Summary
