@@ -5,6 +5,118 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-05 — Zoom/drag sluggishness after state reveal (steady-state Pixi overhead)
+
+### Summary
+User-reported follow-up to the same-day LOD/hover fix above: zoom and drag
+both felt slower specifically once zoom crosses `STATE_ZOOM_THRESHOLD` and
+the ~4600 state borders become visible -- not a one-time stutter at the
+threshold crossing, but a sustained sluggishness for as long as states stay
+on screen. Confirmed first that states are *not* recomputed on every reveal
+(built once at mount, `setVisibleAboveZoom` is just a boolean flip -- no
+rebuild, no re-fetch), then reproduced and profiled the actual gesture via
+chrome-devtools (synthetic wheel/pointer events + CPU-profile sample
+decoding, same methodology as the earlier fix this same day). On the same
+scripted repro (5 wheel ticks crossing the threshold, a 20-step drag, 4 more
+wheel ticks): ticks exceeding 8ms dropped from 125/1216 (~10%, several
+sustained 15-18ms) to 1/2046 (a tracing-tool startup artifact, not real
+work); mean tick time roughly halved (2.46ms to 1.23ms).
+
+### Diagnosis
+Comparing ticker (`_tick`) frame durations immediately before vs. after the
+threshold crossing in the same trace showed a real, sustained cost increase
+(median 0.7ms before to a mix including many 15-18ms frames after), not a
+single spike -- ruling out a rebuild-style bug like the earlier LOD fix.
+Decoding the trace's CPU profile (`ProfileChunk`/`Profile` events,
+reconstructed sample-by-sample since no built-in insight covers this) for
+self-time after the reveal surfaced two distinct, unrelated costs, both
+scaling with *how many display objects currently exist as visible children*
+regardless of whether anything about them is changing:
+1. `packAttributes` (Pixi's batch renderer packing vertex data into the
+   shared buffer) as the single largest self-time consumer -- normal Pixi
+   behavior, but multiplied by ~4600 additional always-visible `Graphics`
+   children the moment `statesLayer` turns on.
+2. `updateTransformAndChildren` (scene-graph transform walk) and, more
+   surprisingly, `hitTestMoveRecursive` -- Pixi's *own* federated event
+   system doing its own recursive hit-test walk of the whole scene graph on
+   every pointermove. This app never uses Pixi's built-in interaction
+   (Phase 4 deliberately built manual `pointInPolygon` hit-testing instead,
+   specifically to avoid enabling per-object interactivity), but nothing
+   had ever explicitly turned Pixi's own event system off, so it was still
+   walking all ~4850 entities' worth of containers for no reason.
+Confirmed via `node_modules/pixi.js`'s own `EventBoundary.mjs` source that
+`eventMode = "none"` on the stage short-circuits `_interactivePrune` at the
+root before it recurses into any children, rather than guessing from
+behavior alone.
+
+### Changes
+
+**`MapCanvas.tsx` -- disable Pixi's unused built-in event system**
+- `app.stage.eventMode = "none"`, set once after `app.canvas` is attached.
+  Eliminates `hitTestMoveRecursive` entirely, unconditionally -- dead work
+  regardless of object count, safe because all real interaction here has
+  always been manual canvas listeners, never Pixi's own events.
+
+**`MapCanvas.tsx` -- viewport-cull the states layer**
+- States are no longer all permanently parented to `statesLayer` at mount.
+  Building the ~4600 `CountryContainer`s still happens once (geometry is
+  never recomputed), but each is now stored alongside a world-space bounding
+  box (`stateRenderItems`, projected once from the entity's lon/lat
+  `boundingBox` via `project()`) instead of being added as a child
+  immediately.
+- New `declutterStates()`, structurally the same idea as the existing
+  `declutterLabels()` (which already solved this identical problem for
+  labels, per the Phase 3b changelog entry): only `addChild`/`removeChild`
+  states whose bounding box intersects `viewportWorldBounds`. No collision
+  placement needed (borders don't need to avoid overlapping each other the
+  way label boxes do) -- just membership. No-ops below
+  `STATE_ZOOM_THRESHOLD` since `statesLayer` is invisible there anyway, so
+  there's nothing to gain from computing membership no one will see.
+- Wired into the same debounced trigger `declutterLabels` already uses
+  (`scheduleLabelDeclutter`, fired off wheel/drag/resize) rather than adding
+  a second near-identical timer -- both are fundamentally "the viewport
+  changed, recompute what's attached" and need to agree on the same
+  viewport/zoom snapshot.
+
+### Decisions
+- **Reused the label-culling pattern instead of inventing a new one** --
+  `declutterLabels` already established "build once, attach only what
+  survives viewport culling" as the fix for this exact class of problem
+  (thousands of permanently-parented children costing real per-frame Pixi-
+  internal time regardless of visibility). Applying the same shape of fix to
+  states keeps the file's two "thousands of entities, one hidden until
+  zoomed in" cases consistent with each other rather than solving the same
+  problem two different ways.
+- **`eventMode = "none"` fixed globally, not scoped to the states layer** --
+  it's dead weight for the whole app regardless of which layer is visible,
+  and safe unconditionally since no code anywhere relies on Pixi's own
+  event/interaction system.
+- **Bounding-box prefilter for culling reuses the same antimeridian
+  looseness already accepted elsewhere** (`findEntityAt`'s prefilter,
+  `computeBoundingBox`'s known Russia/Fiji gap) -- an overly wide box only
+  ever fails to cull a state early, it never hides one that should be
+  visible, so it's fine to reuse without a tighter (and more expensive)
+  bound.
+- **Hit-testing, selection, and the highlight overlay were deliberately left
+  untouched** -- `hitTestScreenPoint`/`findEntityAt` operate on the full
+  `stateEntities` array regardless of what's currently attached for
+  rendering, and `drawHighlights` looks entities up the same way into its
+  own persistent `hoverGraphic`/`selectionGraphic`, independent of
+  `statesLayer`'s children. Culling only affects what's drawn, never what's
+  selectable -- a state just off the edge of the viewport (e.g. selected via
+  the search box) still highlights correctly even if its own border
+  container happens to be detached at that moment.
+
+### Deferred / not yet implemented
+- Merging many states' borders into fewer batched `Graphics` objects (would
+  cut `packAttributes` cost further for whatever's still on screen at once)
+  -- not pursued since viewport culling alone already brought frame cost
+  back down to baseline for the measured repro; revisit only if a
+  pathological case (e.g. a viewport spanning many small, dense countries'
+  worth of states at once) is later found to still be slow.
+
+---
+
 ## 2026-08-05 — Zoom performance fix (hover overlay + LOD fill rebuild)
 
 ### Summary

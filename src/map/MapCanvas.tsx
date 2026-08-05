@@ -12,6 +12,7 @@ import {
 import {
   fillGeometry,
   strokeGeometry,
+  project,
   unproject,
   CountryContainer,
   LabelText,
@@ -171,6 +172,19 @@ export function MapCanvas() {
 
         container.appendChild(app.canvas);
 
+        // All pointer interaction here (drag pan, wheel zoom, hover/click
+        // selection) is handled manually via raw canvas listeners below --
+        // Phase 4 deliberately avoided Pixi's own eventMode/hitArea system
+        // to sidestep per-object interactivity cost across thousands of
+        // entities (see changelog). But Pixi's EventSystem still installs
+        // its own pointer listeners and runs its own recursive hit-test
+        // walk of the whole scene graph on every pointermove regardless --
+        // it doesn't know it's unused. Measured this costing real time
+        // (`hitTestMoveRecursive`) once the ~4600-entity states layer
+        // becomes visible. `eventMode = "none"` on the stage prunes that
+        // walk at the root before it recurses into any children.
+        app.stage.eventMode = "none";
+
         // Base per-axis stretch so the world exactly fills the screen at
         // zoom = 1 -- matches the original non-uniform "always fills the
         // window" behavior. Camera x/y/zoom then layers a uniform pan/zoom
@@ -215,16 +229,45 @@ export function MapCanvas() {
         // colors the area, and a state fill only becomes useful once Phase 4
         // selection needs one to highlight. Starts hidden to avoid a one-
         // frame flash before the ticker's setVisibleAboveZoom takes over.
+        //
+        // Unlike countryContainers, these are *not* all addChild'd here.
+        // Measured (see changelog) that ~4600 containers all being real
+        // children of a visible layer costs real per-tick time regardless of
+        // whether anything about them changes -- Pixi still transform-updates
+        // and batch-packs every visible child every frame. declutterStates()
+        // below attaches only whichever states are actually inside the
+        // current viewport, same "build once, attach only what's needed"
+        // approach declutterLabels already uses for the same reason.
         const stateEntities = buildStateEntities(loadStatesData(), initialWorld.countries);
         const statesLayer = new Container();
         statesLayer.visible = false;
-        for (const entity of stateEntities) {
+        const stateRenderItems = stateEntities.map((entity) => {
           const c = new CountryContainer(entity);
           // Safe: same reasoning as the countryContainers cast above --
           // buildStateEntities never produces label geometry either.
           strokeGeometry(c.stroke, entity.geometry as AreaGeometry, STATE_BORDER_COLOR);
-          statesLayer.addChild(c);
-        }
+          // World-space bbox, projected once from the entity's (lon/lat)
+          // boundingBox -- cheap prefilter for declutterStates, same
+          // known-and-accepted antimeridian looseness as findEntityAt's own
+          // boundingBox prefilter (an overly wide box only ever fails to
+          // cull early, never hides a state that should be visible).
+          const { minLon, minLat, maxLon, maxLat } = entity.boundingBox;
+          const corners = [
+            project(minLon, minLat),
+            project(minLon, maxLat),
+            project(maxLon, minLat),
+            project(maxLon, maxLat),
+          ];
+          const xs = corners.map((p) => p[0]);
+          const ys = corners.map((p) => p[1]);
+          return {
+            container: c,
+            minX: Math.min(...xs),
+            maxX: Math.max(...xs),
+            minY: Math.min(...ys),
+            maxY: Math.max(...ys),
+          };
+        });
         worldContainer.addChild(statesLayer);
 
         // Feeds Phase 4 interaction (search, and eventually anything else
@@ -623,10 +666,41 @@ export function MapCanvas() {
           }
         }
 
+        // Same viewport-cull idea as declutterLabels, applied to the states
+        // layer's ~4600 border containers instead of label objects: only
+        // attach whichever are inside the current viewport, detach the
+        // rest. No collision placement needed here (borders don't overlap
+        // each other visually the way label boxes do), just membership.
+        // No-ops below STATE_ZOOM_THRESHOLD -- statesLayer is invisible
+        // there anyway (see setVisibleAboveZoom), so there's nothing to
+        // gain from computing membership no one will see; whatever was
+        // attached before simply stays attached, cheaply, until zoom
+        // crosses back above threshold and this runs for real again.
+        function declutterStates() {
+          if (current.zoom <= STATE_ZOOM_THRESHOLD) return;
+          const { width, height } = app.screen;
+          const bounds = viewportWorldBounds(current, width, height, baseScaleX, baseScaleY);
+          for (const item of stateRenderItems) {
+            const onScreen =
+              item.maxX >= bounds.minX &&
+              item.minX <= bounds.maxX &&
+              item.maxY >= bounds.minY &&
+              item.minY <= bounds.maxY;
+            if (onScreen) {
+              if (item.container.parent !== statesLayer) statesLayer.addChild(item.container);
+            } else if (item.container.parent === statesLayer) {
+              statesLayer.removeChild(item.container);
+            }
+          }
+        }
+
         // Debounced off both wheel (zoom) and drag (pan) -- unlike the LOD
-        // check above, panning alone *does* change which labels are
+        // check above, panning alone *does* change which labels/states are
         // candidates (the viewport itself moved), so this can't reuse
-        // scheduleLodCheck's wheel-only trigger.
+        // scheduleLodCheck's wheel-only trigger. Drives both declutter
+        // passes off the one timer rather than adding a second, near-
+        // identical one -- they're both "viewport changed, recompute what's
+        // attached" and always need to agree on the current viewport/zoom.
         let labelDeclutterTimeout: ReturnType<typeof setTimeout> | null = null;
         const scheduleLabelDeclutter = () => {
           if (labelDeclutterTimeout !== null) clearTimeout(labelDeclutterTimeout);
@@ -634,12 +708,14 @@ export function MapCanvas() {
             labelDeclutterTimeout = null;
             if (cancelled) return;
             declutterLabels();
+            declutterStates();
           }, LABEL_DECLUTTER_DEBOUNCE_MS);
         };
 
         // Declutter the default view immediately rather than waiting for
         // the first interaction to trigger the debounce above.
         declutterLabels();
+        declutterStates();
 
         // Redraws the highlight overlay whenever the store's
         // selected/hovered entity changes -- from pointer events here, or
