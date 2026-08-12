@@ -1,5 +1,5 @@
 import { Container, Graphics, BitmapText, BitmapFont } from "pixi.js";
-import type { AreaGeometry, Position } from "./loadWorldData";
+import type { AreaGeometry, LineGeometry, Position } from "./loadWorldData";
 import type { Entity } from "./entities";
 
 const BORDER_COLOR = 0x4a4a4a;
@@ -133,6 +133,30 @@ export function strokeGeometry(graphics: Graphics, geometry: AreaGeometry, color
         graphics.poly(points, true).stroke({ width: 1, color, pixelLine: true });
       }
     }
+  }
+}
+
+// Rivers' line equivalent of strokeGeometry -- same pixelLine primitive
+// (zoom-invariant width, no corner joins), but drawn open (`poly(points,
+// false)`) instead of closed: a river is a path, not a ring, so there's no
+// "last point connects back to the first" to draw and no fill concept at
+// all (see loadWorldData.ts's LineGeometry comment).
+//
+// Deliberately skips splitAtAntimeridian, unlike every polygon-drawing
+// function in this file: that helper's "stitch the first and last split
+// piece back together" step (see its own comment) assumes a closed ring,
+// which doesn't hold for an open path -- applying it here could stitch two
+// genuinely unrelated ends of a river together. No river in the vendored
+// data actually crosses the antimeridian, so this is "guaranteed correct
+// handling of a case that doesn't occur" traded for "no risk of misapplying
+// ring-closure logic to a path where it doesn't belong" -- lower stakes
+// either way than the polygon cases that motivated splitAtAntimeridian in
+// the first place.
+export function strokeLine(graphics: Graphics, geometry: LineGeometry, color: number = BORDER_COLOR) {
+  const lines = geometry.type === "LineString" ? [geometry.coordinates] : geometry.coordinates;
+  for (const line of lines) {
+    const points = projectPoints(line);
+    graphics.poly(points, false).stroke({ width: 1, color, pixelLine: true });
   }
 }
 

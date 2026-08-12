@@ -5,6 +5,116 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-12 — Rivers (Phase 3 water bodies, stage 2 of 3)
+
+### Summary
+Second stage of the water-bodies plan (see
+`.development_logs/plan-water-bodies.md`). Rivers are the first entity type
+in the codebase with genuinely new geometry -- every existing render/hit-test
+primitive (`fillGeometry`, `strokeGeometry`, `pointInPolygon`, `computeArea`,
+`computeCentroid`) is built for `Polygon`/`MultiPolygon` only, and a river is
+an open `LineString`/`MultiLineString` path with no interior.
+
+### Changes
+
+**New vendored data (`src/map/data/rivers-10m.json`)**
+- Natural Earth's `ne_10m_rivers_lake_centerlines`, filtered to
+  `scalerank <= 6` (490 of 1455 source features) to drop minor tributaries.
+  Unlike lakes, the source has no natural unique key (no `ne_id` here) --
+  assigned a synthetic `river_id` (array index) at vendoring time, baked in
+  as the topojson id-field. Simplified 8% via mapshaper; one feature (the
+  Loire) collapsed to a `null` geometry the same way one lake did, for the
+  same reason (an unrepairable self-intersection flagged during simplify) --
+  489 of 490 render.
+
+**`loadWorldData.ts`**
+- New `LineStringGeometry`/`MultiLineStringGeometry`, aliased as
+  `LineGeometry`, added to the broader `Geometry` union alongside the
+  existing `AreaGeometry`/`PointGeometry`.
+
+**`entities.ts`**
+- `EntityType` gained `"river"`. New `RiverGeoFeature`/
+  `RiverGeoFeatureCollection` types and `buildRiverEntities()` -- same shape
+  and null-geometry-filtering/missing-name-fallback approach as
+  `buildLakeEntities`.
+- `computeBoundingBox` gained a `LineString`/`MultiLineString` branch --
+  point sequences one level shallower than a polygon's rings, so it's its
+  own early return rather than reusing the polygon loop.
+- New `pointNearLine()` (river equivalent of `pointInPolygon` -- distance-
+  to-segment against a tolerance, not a ray-cast, since a line has no
+  interior) built on a new `squaredDistanceToSegment()` helper, plus
+  `findRiverAt()` (river equivalent of `findEntityAt`, with the bounding-box
+  prefilter grown by the tolerance on every side). Deliberately skips
+  `splitAtAntimeridian` -- that helper's ring-closure step assumes a closed
+  ring, which doesn't hold for an open path, and no vendored river actually
+  crosses the antimeridian.
+
+**`loadRiversData.ts` (new)**
+- Mirrors `loadLakesData.ts`/`loadStatesData.ts` -- single resolution.
+
+**`render.ts`**
+- New `strokeLine()` -- rivers' line equivalent of `strokeGeometry`, same
+  `pixelLine` primitive but drawn open (`poly(points, false)`) instead of
+  closed, since a river is a path, not a ring, and has no fill concept.
+
+**`MapCanvas.tsx`**
+- New `riversLayer`, added between `statesLayer` and `lakesLayer` per
+  architecture.md's layer order (Countries → States → Cities → Rivers →
+  Lakes). Plain `Graphics` per river (no `CountryContainer` -- nothing to
+  fill), always-visible like lakes, same "no ~4600-entity perf concern"
+  reasoning (490 rivers).
+- `hitTestScreenPoint` now checks rivers after lakes, before falling
+  through to state/country -- same paint-order-follows-hit-priority
+  reasoning as lakes, with a new `RIVER_HIT_TOLERANCE_PX` (6px) converted to
+  lon/lat degrees at hit-test time (using the current zoom/baseScale) so the
+  click target stays a constant on-screen size rather than a fixed
+  geographic distance.
+- `drawHighlights` needed an actual code change, not just new data: its
+  existing `fillGeometry`/`strokeGeometry` calls are typed to `AreaGeometry`
+  and would silently misrender a selected/hovered river (force-cast despite
+  really being `LineGeometry`). Added a `LineString`/`MultiLineString`
+  branch to both the selection and hover paths that calls `strokeLine`
+  instead.
+- `riverEntities` folded into `interactionStore.setEntities(...)` and the
+  highlight overlay's `allEntities` lookup, same as lakes -- no changes
+  needed in `SearchBox.tsx`/`interactionStore.ts`.
+
+### Decisions
+- **Constant-pixel hit-test tolerance, not a fixed degree value** -- a
+  river has no interior to test against, so "close enough" has to mean a
+  consistent on-screen distance regardless of zoom, converted to lon/lat
+  degrees at the point of use rather than baked into the entity data.
+- **No antimeridian handling for rivers** -- `strokeLine`/`pointNearLine`
+  both skip it deliberately; applying `splitAtAntimeridian`'s ring-closure
+  logic to an open path risks stitching two unrelated ends of a river
+  together, and no real river in the vendored data crosses the dateline
+  anyway. Lower stakes either way than the polygon cases that motivated the
+  original fix.
+- **Synthetic id, not a natural key** -- rivers have no `ne_id`-equivalent
+  in the source data, unlike lakes; an array-index id assigned once at
+  vendoring time is stable enough for a vendored snapshot, with the same
+  caveat any such id has (would need reassigning on a re-vendor with a
+  different filter/order).
+
+### Investigated, ruled out as unrelated
+- A `GL_INVALID_OPERATION: Insufficient buffer size` WebGL warning appeared
+  during in-browser verification. Isolated via `git stash` back to the
+  already-committed lakes-only baseline (before any river code existed) --
+  it reproduces there too, on a clean reload with zero interaction. Same
+  family as the known Pixi/React.StrictMode double-invoke pooled-buffer bug
+  already documented in this changelog (Phase 3b, bug #2) -- apparently a
+  lower total-draw-call threshold triggers it than what was measured back
+  then, not something introduced by rivers. Not fixed in this pass; worth
+  a dedicated look since it now reproduces without any label code involved
+  at all (`VITE_SHOW_LABELS` is off).
+
+### Deferred / not yet implemented
+- Seas (stage 3 of the water-bodies plan).
+- The pre-existing WebGL buffer warning noted above.
+- Cities (explicitly skipped, per user request).
+
+---
+
 ## 2026-08-12 — Lakes (Phase 3 water bodies, stage 1 of 3)
 
 ### Summary

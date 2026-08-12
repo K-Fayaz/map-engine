@@ -1,4 +1,4 @@
-import type { AreaGeometry, Geometry, GeoFeatureCollection, Position } from "./loadWorldData";
+import type { AreaGeometry, LineGeometry, Geometry, GeoFeatureCollection, Position } from "./loadWorldData";
 import { splitAtAntimeridian } from "./render";
 import alpha3ToNumeric from "./data/iso-alpha3-to-numeric.json";
 
@@ -18,7 +18,7 @@ export interface BoundingBox {
   maxLat: number;
 }
 
-export type EntityType = "country" | "state" | "label" | "lake";
+export type EntityType = "country" | "state" | "label" | "lake" | "river";
 
 export interface Entity {
   id: string;
@@ -70,6 +70,23 @@ export function computeBoundingBox(geometry: Geometry): BoundingBox {
   let minLat = Infinity;
   let maxLon = -Infinity;
   let maxLat = -Infinity;
+
+  // LineString/MultiLineString (rivers) have no rings to speak of -- just
+  // point sequences, one level shallower than a polygon's rings. Handled as
+  // its own branch rather than folding into the polygon loop below, since
+  // there's no ring-index exterior/hole distinction to reuse here.
+  if (geometry.type === "LineString" || geometry.type === "MultiLineString") {
+    const lines = geometry.type === "LineString" ? [geometry.coordinates] : geometry.coordinates;
+    for (const line of lines) {
+      for (const [lon, lat] of line) {
+        if (lon < minLon) minLon = lon;
+        if (lon > maxLon) maxLon = lon;
+        if (lat < minLat) minLat = lat;
+        if (lat > maxLat) maxLat = lat;
+      }
+    }
+    return { minLon, minLat, maxLon, maxLat };
+  }
 
   const polygons =
     geometry.type === "Polygon" ? [geometry.coordinates] : geometry.coordinates;
@@ -399,6 +416,132 @@ export function buildLakeEntities(lakes: LakeGeoFeatureCollection): Entity[] {
       geometry: f.geometry,
       boundingBox: computeBoundingBox(f.geometry),
     }));
+}
+
+// Natural Earth's ne_10m_rivers_lake_centerlines has no natural unique key
+// at all (unlike lakes' ne_id) -- `river_id` here is a synthetic index
+// assigned once at vendoring time (see rivers-10m.json's provenance notes),
+// baked into the topojson as its id-field. Stable as long as the vendored
+// file isn't regenerated with a different filter/order, same caveat as any
+// other vendored snapshot in this codebase.
+export interface RiverGeoFeature {
+  type: "Feature";
+  id?: number;
+  properties: { name?: string };
+  // Nullable for the same reason LakeGeoFeature's is -- see
+  // buildRiverEntities' comment on the one vendored river that hits this.
+  geometry: LineGeometry | null;
+}
+
+export interface RiverGeoFeatureCollection {
+  type: "FeatureCollection";
+  features: RiverGeoFeature[];
+}
+
+// Same shape as buildLakeEntities, and the same reasoning for both the
+// `name: ""` fallback (11 of 490 rivers are unnamed in the source data) and
+// filtering out features whose geometry comes back `null` from
+// topojson-client -- mapshaper's simplify pass flagged 9 unrepairable
+// self-intersections across the vendored set, one of which (the Loire, of
+// all rivers) collapses entirely rather than leaving a degenerate-but-usable
+// line. 489 of 490 render.
+export function buildRiverEntities(rivers: RiverGeoFeatureCollection): Entity[] {
+  return rivers.features
+    .filter((f): f is RiverGeoFeature & { geometry: LineGeometry } => f.geometry != null)
+    .map((f) => ({
+      id: `river-${f.id ?? ""}`,
+      name: f.properties.name ?? "",
+      type: "river",
+      geometry: f.geometry,
+      boundingBox: computeBoundingBox(f.geometry),
+    }));
+}
+
+// Squared distance from point (lon, lat) to the segment [a, b], all in raw
+// lon/lat degrees -- same "not physically accurate near the poles, fine for
+// a coarse hit-test tolerance" caveat the rest of this file's geometry math
+// already carries. Squared (not sqrt'd) since pointNearLine only ever
+// compares it against an already-squared tolerance -- one sqrt avoided per
+// segment, over what can be a few thousand segments across all rivers per
+// hit-test.
+function squaredDistanceToSegment(
+  lon: number,
+  lat: number,
+  a: Position,
+  b: Position,
+): number {
+  const [ax, ay] = a;
+  const [bx, by] = b;
+  const dx = bx - ax;
+  const dy = by - ay;
+  const lengthSquared = dx * dx + dy * dy;
+
+  if (lengthSquared === 0) {
+    // Degenerate segment (a === b) -- distance to the single point.
+    return (lon - ax) ** 2 + (lat - ay) ** 2;
+  }
+
+  // Project (lon, lat) onto the infinite line through a/b, clamped to
+  // [0, 1] so points beyond either endpoint measure to that endpoint
+  // instead of the line's extension.
+  let t = ((lon - ax) * dx + (lat - ay) * dy) / lengthSquared;
+  t = Math.max(0, Math.min(1, t));
+
+  const closestLon = ax + t * dx;
+  const closestLat = ay + t * dy;
+  return (lon - closestLon) ** 2 + (lat - closestLat) ** 2;
+}
+
+// Point-near-line test, the river equivalent of pointInPolygon -- a line has
+// no interior, so "hit" means "within toleranceDegrees of any segment", not
+// a ray-cast. No antimeridian splitting here (unlike pointInPolygon/
+// fillGeometry/computeCentroid): a wrong distance across a dateline-crossing
+// segment only risks a river hit-testing slightly wrong right at the
+// antimeridian itself, not a wrong shape rendered or a wrong country
+// selected -- much lower stakes than the polygon cases that motivated
+// splitAtAntimeridian, so not worth the same complexity here.
+export function pointNearLine(
+  lon: number,
+  lat: number,
+  geometry: LineGeometry,
+  toleranceDegrees: number,
+): boolean {
+  const lines = geometry.type === "LineString" ? [geometry.coordinates] : geometry.coordinates;
+  const toleranceSquared = toleranceDegrees * toleranceDegrees;
+
+  for (const line of lines) {
+    for (let i = 0; i < line.length - 1; i++) {
+      if (squaredDistanceToSegment(lon, lat, line[i], line[i + 1]) <= toleranceSquared) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// Linear scan with the same boundingBox prefilter idea as findEntityAt, but
+// grown by `toleranceDegrees` on every side first -- a river whose segment
+// geometry sits just outside its own tight bbox-by-toleranceDegrees would
+// otherwise be rejected before pointNearLine ever gets a chance to measure
+// the actual distance.
+export function findRiverAt(
+  rivers: Entity[],
+  lon: number,
+  lat: number,
+  toleranceDegrees: number,
+): Entity | undefined {
+  return rivers.find((entity) => {
+    const { minLon, minLat, maxLon, maxLat } = entity.boundingBox;
+    if (
+      lon < minLon - toleranceDegrees ||
+      lon > maxLon + toleranceDegrees ||
+      lat < minLat - toleranceDegrees ||
+      lat > maxLat + toleranceDegrees
+    ) {
+      return false;
+    }
+    return pointNearLine(lon, lat, entity.geometry as LineGeometry, toleranceDegrees);
+  });
 }
 
 // Below this raw-shoelace area, a country's label shows its ISO alpha-3

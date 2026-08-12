@@ -1,19 +1,23 @@
 import { useEffect, useRef } from "react";
 import { Application, Container, Graphics } from "pixi.js";
-import { loadWorldData, INDIA_COUNTRY_ID, type Resolution, type AreaGeometry } from "./loadWorldData";
+import { loadWorldData, INDIA_COUNTRY_ID, type Resolution, type AreaGeometry, type LineGeometry } from "./loadWorldData";
 import { loadStatesData } from "./loadStatesData";
 import { loadLakesData } from "./loadLakesData";
+import { loadRiversData } from "./loadRiversData";
 import {
   buildCountryEntities,
   buildStateEntities,
   buildLakeEntities,
+  buildRiverEntities,
   buildLabelEntities,
   findEntityAt,
+  findRiverAt,
   type Entity,
 } from "./entities";
 import {
   fillGeometry,
   strokeGeometry,
+  strokeLine,
   project,
   unproject,
   CountryContainer,
@@ -60,6 +64,9 @@ const STATE_LABEL_STYLE: LabelStyle = { fontSize: 10, color: 0x555555 };
 // land fill it sits on; pixelLine ignores width, same reasoning as before.
 const LAKE_COLOR = OCEAN_COLOR;
 const LAKE_BORDER_COLOR = 0x04697b;
+// Same water hue as a lake's border -- a river is a thin ribbon of the same
+// substance, no separate color needed.
+const RIVER_COLOR = LAKE_BORDER_COLOR;
 
 // How far past the default view (world exactly fills the screen) the user
 // can zoom in. Arbitrary reasonable cap for V1 -- there's no Phase 3
@@ -106,6 +113,15 @@ const STATE_ZOOM_THRESHOLD = 6;
 // drag (pan), not a click -- Phase 2's drag handling never needed to make
 // this distinction since it had nothing else pointer events could mean.
 const CLICK_MOVE_THRESHOLD_PX = 4;
+
+// Rivers have no interior to hit-test against (open paths, not closed
+// rings, unlike every other selectable entity) -- clicking within this many
+// screen pixels of any segment counts as a hit. Kept as a constant pixel
+// count, not a fixed lon/lat tolerance, so the click target stays a
+// reasonable, constant size on screen regardless of zoom -- converted to
+// degrees at hit-test time (see hitTestScreenPoint) since that's the unit
+// pointNearLine actually needs.
+const RIVER_HIT_TOLERANCE_PX = 6;
 
 // Selection reads as stronger than hover: hover is a stroke-only outline
 // (see drawHighlights), selection additionally gets a translucent fill tint,
@@ -305,6 +321,20 @@ export function MapCanvas() {
         });
         worldContainer.addChild(statesLayer);
 
+        // Rivers sit above states, below lakes in architecture.md's layer
+        // order (Countries -> States -> Cities -> Rivers -> Lakes). Same
+        // "no ~4600-entity perf concern, no culling needed" reasoning as
+        // lakes below (490 rivers). No CountryContainer here -- a river has
+        // no fill, just a single Graphics per entity holding its stroke.
+        const riverEntities = buildRiverEntities(loadRiversData());
+        const riversLayer = new Container();
+        for (const entity of riverEntities) {
+          const g = new Graphics();
+          strokeLine(g, entity.geometry as LineGeometry, RIVER_COLOR);
+          riversLayer.addChild(g);
+        }
+        worldContainer.addChild(riversLayer);
+
         // Lakes sit above states in architecture.md's layer order -- a lake
         // spanning a state (or country) border should read as one unbroken
         // water shape on top, not interrupted by the border line underneath
@@ -324,9 +354,14 @@ export function MapCanvas() {
 
         // Feeds Phase 4 interaction (search, and eventually anything else
         // that needs to look an entity up by id from outside this effect) --
-        // countries, states, and lakes only, no labels (they're derived
-        // display artifacts, not user-facing selectable entities).
-        interactionStore.setEntities([...borderEntities, ...stateEntities, ...lakeEntities]);
+        // countries, states, lakes, and rivers only, no labels (they're
+        // derived display artifacts, not user-facing selectable entities).
+        interactionStore.setEntities([
+          ...borderEntities,
+          ...stateEntities,
+          ...lakeEntities,
+          ...riverEntities,
+        ]);
 
         // Labels sit above everything (see architecture.md's layer list --
         // Labels is the topmost layer). They're children of worldContainer
@@ -383,7 +418,7 @@ export function MapCanvas() {
         highlightLayer.addChild(selectionGraphic);
         worldContainer.addChild(highlightLayer);
 
-        const allEntities = [...borderEntities, ...stateEntities, ...lakeEntities];
+        const allEntities = [...borderEntities, ...stateEntities, ...lakeEntities, ...riverEntities];
         function findById(id: string | null): Entity | undefined {
           if (!id) return undefined;
           return allEntities.find((e) => e.id === id);
@@ -404,6 +439,14 @@ export function MapCanvas() {
           for (const id of selectedEntityIds) {
             const selected = findById(id);
             if (!selected) continue;
+            // Rivers are the one selectable entity with no interior --
+            // fillGeometry/strokeGeometry are typed to (and only make sense
+            // for) AreaGeometry, so a river needs strokeLine instead of the
+            // fill+stroke every other entity type gets.
+            if (selected.geometry.type === "LineString" || selected.geometry.type === "MultiLineString") {
+              strokeLine(selectionGraphic, selected.geometry, SELECTION_COLOR);
+              continue;
+            }
             const geometry = selected.geometry as AreaGeometry;
             fillGeometry(selectionGraphic, geometry, SELECTION_COLOR, SELECTION_FILL_ALPHA);
             strokeGeometry(selectionGraphic, geometry, SELECTION_COLOR);
@@ -420,9 +463,15 @@ export function MapCanvas() {
             // measured adding real extra long-task time during zoom (see
             // changelog) on top of the LOD fill rebuild's own cost --
             // strokeGeometry's pixelLine needs no tessellation, so it stays
-            // cheap regardless of how often hover changes.
+            // cheap regardless of how often hover changes. Rivers have no
+            // fill option in the first place (see the selection branch
+            // above), so strokeLine is the only real choice there too.
             if (hovered) {
-              strokeGeometry(hoverGraphic, hovered.geometry as AreaGeometry, HOVER_COLOR);
+              if (hovered.geometry.type === "LineString" || hovered.geometry.type === "MultiLineString") {
+                strokeLine(hoverGraphic, hovered.geometry, HOVER_COLOR);
+              } else {
+                strokeGeometry(hoverGraphic, hovered.geometry as AreaGeometry, HOVER_COLOR);
+              }
             }
           }
         }
@@ -544,16 +593,24 @@ export function MapCanvas() {
         // currently active for interaction -- states once zoomed in past
         // STATE_ZOOM_THRESHOLD, countries otherwise. Same threshold
         // declutterLabels uses for the same "which layer is live" question.
-        // Lakes are checked first, regardless of zoom: they paint on top of
-        // both layers (see lakesLayer above), so a click inside one should
-        // resolve to the lake, matching what's actually visible, the same
-        // "hit-test priority follows paint order" reasoning already applied
-        // to India's re-added-on-top container elsewhere in this file.
+        // Lakes, then rivers, are checked first, regardless of zoom: they
+        // paint on top of both layers (see lakesLayer/riversLayer above), so
+        // a click inside/near one should resolve to it, matching what's
+        // actually visible, the same "hit-test priority follows paint order"
+        // reasoning already applied to India's re-added-on-top container
+        // elsewhere in this file.
         function hitTestScreenPoint(screenX: number, screenY: number): Entity | undefined {
           const [wx, wy] = screenToWorld(current, screenX, screenY, baseScaleX, baseScaleY);
           const [lon, lat] = unproject(wx, wy);
           const lakeHit = findEntityAt(lakeEntities, lon, lat);
           if (lakeHit) return lakeHit;
+          // Converts the constant on-screen pixel tolerance to lon/lat
+          // degrees at the current zoom -- see RIVER_HIT_TOLERANCE_PX's
+          // comment for why this can't just be a fixed degree value.
+          const riverToleranceDegrees =
+            (RIVER_HIT_TOLERANCE_PX * 360) / (WORLD_WIDTH * baseScaleX * current.zoom);
+          const riverHit = findRiverAt(riverEntities, lon, lat, riverToleranceDegrees);
+          if (riverHit) return riverHit;
           const candidates = current.zoom > STATE_ZOOM_THRESHOLD ? stateEntities : borderEntities;
           return findEntityAt(candidates, lon, lat);
         }

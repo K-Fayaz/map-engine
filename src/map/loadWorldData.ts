@@ -29,17 +29,33 @@ export interface PointGeometry {
   coordinates: Position;
 }
 
+export interface LineStringGeometry {
+  type: "LineString";
+  coordinates: Position[];
+}
+
+export interface MultiLineStringGeometry {
+  type: "MultiLineString";
+  coordinates: Position[][];
+}
+
 // Polygon/MultiPolygon -- the only shapes render.ts's fillGeometry/
 // strokeGeometry know how to draw. Kept as its own alias (rather than just
 // inlining the union) so render.ts can stay typed to exactly what it
 // supports, distinct from Entity's broader Geometry below.
 export type AreaGeometry = PolygonGeometry | MultiPolygonGeometry;
 
+// LineString/MultiLineString -- rivers (see entities.ts's buildRiverEntities).
+// Unlike AreaGeometry, there's no fill concept for these (an open path, not
+// a closed ring) -- render.ts's strokeLine is the only thing that draws
+// them, and pointNearLine (entities.ts) the only thing that hit-tests them.
+export type LineGeometry = LineStringGeometry | MultiLineStringGeometry;
+
 // Broader than AreaGeometry -- includes Point for label entities (see
-// entities.ts's buildLabelEntities). Entity.geometry uses this since
-// architecture.md's Entity shape is meant to hold any entity's geometry,
-// not just area ones.
-export type Geometry = AreaGeometry | PointGeometry;
+// entities.ts's buildLabelEntities) and LineGeometry for rivers. Entity.geometry
+// uses this since architecture.md's Entity shape is meant to hold any
+// entity's geometry, not just area ones.
+export type Geometry = AreaGeometry | LineGeometry | PointGeometry;
 
 export interface GeoFeature {
   type: "Feature";
