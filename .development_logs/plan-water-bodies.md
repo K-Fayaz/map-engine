@@ -103,7 +103,7 @@ existing polygon path.
   measured. Not fixed here -- out of scope for the rivers stage, flagged in
   the changelog as a pre-existing issue to revisit.
 
-## Stage 3 — Seas
+## Stage 3 — Seas ✅ done (2026-08-12)
 
 Labels-only by default (per earlier discussion — marine polygons overlap/
 nest and aren't clean disjoint regions like countries), but geometry is
@@ -111,14 +111,51 @@ still kept for hit-testing + the existing selection highlight overlay, so a
 click still resolves to the right sea/gulf/bay and highlights it using the
 same `drawHighlights` machinery everything else already uses.
 
-- [ ] Source & vendor `ne_10m_geography_marine_polys` → `src/map/data/marine-10m.json`, trimmed to `name`/`featurecla` (Sea/Gulf/Bay/Strait/Ocean)
-- [ ] `entities.ts`: add `"sea"` to `EntityType`; `buildSeaEntities()` (geometry = marine polygon, same shape as `buildCountryEntities`)
-- [ ] `entities.ts`/`labelLayout.ts`: feed sea entities into the existing `buildLabelEntities()` path so names render at their centroid like country/state labels
-- [ ] `MapCanvas.tsx`: **no** default-visible fill/border layer for seas — polygon only participates in `findEntityAt` + `drawHighlights`'s hover/selection overlay (fill+stroke appears only when hovered/selected, never by default)
-- [ ] Decide reveal zoom threshold for the labels (seas are large — likely visible earlier than lakes/rivers, closer to country-label thresholds)
-- [ ] Wire into search box
-- [ ] Verify in-browser: click inside the Arabian Sea / Bay of Bengal with no visible boundary shown, confirm it still selects+highlights correctly; confirm overlapping regions (e.g. a bay inside a sea) resolve to something sane on click
-- [ ] Changelog entry
+- [x] Source & vendor `ne_10m_geography_marine_polys` → `src/map/data/marine-10m.json`, trimmed to `name`/`featurecla` (+ synthetic `sea_id`) — all 306 kept, no scale-rank filter needed
+- [x] `entities.ts`: add `"sea"` to `EntityType`; `buildSeaEntities()` (geometry = marine polygon, same shape as `buildCountryEntities`)
+- [x] `entities.ts`/`labelLayout.ts`: feed sea entities into the existing `buildLabelEntities()` path so names render at their centroid like country/state labels
+- [x] `MapCanvas.tsx`: **no** default-visible fill/border layer for seas — polygon only participates in `findEntityAt` + `drawHighlights`'s hover/selection overlay (fill+stroke appears only when hovered/selected, never by default)
+- [x] Decide reveal zoom threshold for the labels — always visible, no threshold at all (see Notes)
+- [x] Wire into search box
+- [x] Verify in-browser: click inside the Arabian Sea / Bay of Bengal with no visible boundary shown, confirm it still selects+highlights correctly; confirmed land always wins over the sea beneath it, and a genuine open-water click correctly falls through to the sea
+- [x] Changelog entry
+
+### Notes (decisions actually made)
+- **All 306 marine features kept, no filtering** -- unlike lakes/rivers,
+  this dataset is already small (58k points total) and nothing renders by
+  default (labels only), so there's no clutter/perf reason to filter it.
+- **Synthetic `sea_id`, not `ne_id`** -- unlike lakes, `ne_id` here isn't
+  reliably unique (two separate "Great Barrier Reef" polygons share one) --
+  same synthetic-index approach as rivers' `river_id`.
+- **Hit-test priority: checked *last*, as the open-water fallback** -- lakes
+  and rivers paint on top of land so they're checked first; seas have no
+  visible layer at all, so they only ever get considered once a click has
+  already missed every lake, river, country, and state -- verified a click
+  on land always resolves to the country/state, never the sea underneath.
+- **Sea labels are unconditionally visible, not gated behind
+  `VITE_SHOW_LABELS`** -- that flag exists specifically to hide the
+  *known, already-documented* state-layer label overlap bug from a fresh
+  clone; seas are new, don't share that bug, and gating a working feature
+  behind an unrelated flag would just hide it for no reason.
+- **No explicit reveal-zoom threshold for sea labels** -- reused the
+  existing collision-priority algorithm (`computeArea` as importance,
+  already built for country/state labels) instead of adding a new tuned
+  constant. Big oceans naturally win collisions over small straits/bays
+  without needing a separate zoom-gated reveal rule.
+- **`declutterLabels` refactored** to extract a shared `declutterLabelLayer`
+  helper, so the existing country/state viewport-cull + collision-placement
+  pass and the new always-on sea-label pass share one implementation
+  instead of two near-identical copies.
+- **Real bug found and fixed, unrelated to seas' own logic**: the shared
+  `BitmapFont` atlas (`render.ts`) was generated with no explicit `fill`,
+  defaulting to black-inked glyphs. `LabelText`'s per-instance color only
+  *multiplicatively tints* that baked texture -- tinting black can only
+  stay black, so `SEA_LABEL_STYLE`'s light near-white color rendered as
+  black instead, invisible against dark UI but silently wrong. Caught by
+  actually sampling screenshot pixel colors, not by trusting the value was
+  applied. Fixed by baking the atlas in white (`fill: "#ffffff"`) so
+  multiplicative tinting can reach any color, light or dark -- verified
+  existing dark country/state label colors still render correctly too.
 
 ## Open decisions (resolve before/while building, not blocking the plan)
 

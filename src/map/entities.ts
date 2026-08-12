@@ -18,7 +18,7 @@ export interface BoundingBox {
   maxLat: number;
 }
 
-export type EntityType = "country" | "state" | "label" | "lake" | "river";
+export type EntityType = "country" | "state" | "label" | "lake" | "river" | "sea";
 
 export interface Entity {
   id: string;
@@ -544,6 +544,45 @@ export function findRiverAt(
   });
 }
 
+// Natural Earth's ne_10m_geography_marine_polys has a `ne_id`, but unlike
+// lakes' it isn't reliably unique -- two separate "Great Barrier Reef"
+// polygons in the source data share one -- so `sea_id` here is a synthetic
+// index, same approach as rivers' `river_id`, rather than trusting `ne_id`.
+export interface SeaGeoFeature {
+  type: "Feature";
+  id?: number;
+  properties: { name?: string; featurecla?: string };
+  geometry: AreaGeometry;
+}
+
+export interface SeaGeoFeatureCollection {
+  type: "FeatureCollection";
+  features: SeaGeoFeature[];
+}
+
+// Same `name: ""` fallback precedent as lakes/rivers/countries/states for
+// the 11 (of 306) unnamed marine features. Unlike lakes/rivers, no feature
+// here collapsed to a null geometry during simplification (one
+// unrepairable self-intersection was flagged, same as lakes/rivers, but it
+// didn't happen to zero out this time) -- so there's no filter step, all
+// 306 build.
+//
+// Deliberately has no visible fill/border layer in MapCanvas.tsx: marine
+// regions overlap and nest (a bay inside a gulf inside a sea inside an
+// ocean) in ways that don't render sensibly as a set of disjoint filled
+// areas the way countries/lakes do. The geometry is kept anyway, purely so
+// findEntityAt/drawHighlights can still resolve a click inside one and
+// highlight it correctly -- see MapCanvas.tsx's seaEntities wiring.
+export function buildSeaEntities(seas: SeaGeoFeatureCollection): Entity[] {
+  return seas.features.map((f) => ({
+    id: `sea-${f.id ?? ""}`,
+    name: f.properties.name ?? "",
+    type: "sea",
+    geometry: f.geometry,
+    boundingBox: computeBoundingBox(f.geometry),
+  }));
+}
+
 // Below this raw-shoelace area, a country's label shows its ISO alpha-3
 // code (e.g. "TTO") instead of its full name -- small nations packed close
 // together (Caribbean, Balkans, Persian Gulf) are exactly where collision
@@ -577,7 +616,7 @@ function labelText(entity: Entity, area: number): string {
 // labels for (see MapCanvas.tsx).
 export function buildLabelEntities(entities: Entity[]): Entity[] {
   return entities.map((entity) => {
-    // Safe: buildLabelEntities is only ever called with country/state
+    // Safe: buildLabelEntities is only ever called with country/state/sea
     // entities (see MapCanvas.tsx), which always have AreaGeometry -- same
     // reasoning as the AreaGeometry casts in MapCanvas.tsx and render.ts.
     const areaGeometry = entity.geometry as AreaGeometry;

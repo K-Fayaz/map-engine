@@ -215,7 +215,17 @@ function ensureLabelFontInstalled() {
   if (labelFontInstalled) return;
   BitmapFont.install({
     name: LABEL_FONT_FAMILY,
-    style: { fontFamily: "sans-serif", fontSize: 32 },
+    // `fill: "#ffffff"` bakes the atlas glyphs in white, not the canvas
+    // default (black). LabelText's per-instance `style.color` works by
+    // *multiplicatively tinting* this baked texture, not repainting it --
+    // white is the only base that lets that multiply reach every color
+    // freely (white * color = color). A black-baked atlas can only ever
+    // tint *darker* than black, i.e. stay black, regardless of the
+    // requested color -- silently broke SEA_LABEL_STYLE's light color in
+    // MapCanvas.tsx (rendered black instead of near-white) until this was
+    // caught by actually looking at a screenshot, not just trusting the
+    // color value was applied.
+    style: { fontFamily: "sans-serif", fontSize: 32, fill: "#ffffff" },
     chars: LABEL_FONT_CHARS,
     resolution: 2,
   });

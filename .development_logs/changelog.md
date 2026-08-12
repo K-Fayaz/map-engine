@@ -5,6 +5,123 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-12 — Seas (Phase 3 water bodies, stage 3 of 3 — water bodies complete)
+
+### Summary
+Final stage of the water-bodies plan (see
+`.development_logs/plan-water-bodies.md`). Unlike lakes/rivers, seas render
+labels-only by design: Natural Earth's marine polygons overlap and nest
+(a bay inside a gulf inside a sea inside an ocean) in ways that don't work
+as disjoint filled areas, so there's no visible fill/border layer at all --
+only the name renders, at the polygon's centroid, with the geometry kept
+solely for hit-testing and the selection highlight. Also found and fixed a
+real, pre-existing bug in the shared label font while making sea labels'
+color show up correctly.
+
+### Changes
+
+**New vendored data (`src/map/data/marine-10m.json`)**
+- Natural Earth's `ne_10m_geography_marine_polys`, all 306 features kept
+  (no scale-rank filter -- already a small dataset, and nothing renders by
+  default so there's no clutter/perf reason to trim it). `ne_id` isn't
+  reliably unique here (two separate "Great Barrier Reef" polygons share
+  one) -- assigned a synthetic `sea_id` instead, same approach as rivers'
+  `river_id`. One unrepairable self-intersection flagged during
+  simplification, same as lakes/rivers, but didn't happen to zero out a
+  geometry this time -- all 306 render.
+
+**`entities.ts`**
+- `EntityType` gained `"sea"`. New `SeaGeoFeature`/`SeaGeoFeatureCollection`
+  types and `buildSeaEntities()` -- same shape as `buildCountryEntities`,
+  geometry is a plain `AreaGeometry` (no `LineGeometry` special-casing
+  needed the way rivers required, since sea polygons work with the existing
+  `fillGeometry`/`strokeGeometry`/`pointInPolygon` machinery as-is).
+- `buildLabelEntities`'s stale comment (claimed it was "only ever called
+  with country/state entities") updated now that seas go through it too.
+
+**`loadSeasData.ts` (new)**
+- Mirrors the other water-body loaders -- single resolution.
+
+**`MapCanvas.tsx`**
+- `seaEntities` built but deliberately given **no visible layer** -- no
+  `CountryContainer`, no fill/stroke calls, nothing added to
+  `worldContainer` for the polygons themselves. They still feed
+  `interactionStore.setEntities(...)` and the highlight overlay's
+  `allEntities` lookup, so `findEntityAt` and `drawHighlights` (already
+  correct for `AreaGeometry`, no changes needed) can resolve and highlight
+  a click into one.
+- `hitTestScreenPoint` checks seas *last*, as the fallback once lake,
+  river, and land (country/state) all miss -- opposite end of the priority
+  order from lakes/rivers, since seas have nothing painted on top to
+  justify checking them first; a click only reaches a sea by landing on
+  open water with nothing else there. Verified a click on land always
+  resolves to the country/state, never the sea underneath it.
+- New always-visible `seaLabelsLayer` -- independent of `VITE_SHOW_LABELS`
+  (that flag exists specifically for the *known* state-layer label overlap
+  bug; seas are new and don't share it) and independent of
+  `STATE_ZOOM_THRESHOLD` (ocean/sea names stay relevant at any zoom, unlike
+  the country/state label handoff). `declutterLabels` refactored to extract
+  a shared `declutterLabelLayer(layer, allLabels, bounds, scaleX, scaleY)`
+  helper, so the existing country/state pass and the new sea pass reuse one
+  implementation instead of two near-copies. No new reveal-threshold
+  constant needed -- the existing collision-priority algorithm
+  (`computeArea` as importance) naturally keeps big oceans visible over
+  small straits/bays on its own.
+- New `SEA_LABEL_STYLE` (`fontSize: 12, color: 0xe8f4f8`) -- light, since a
+  sea label's centroid typically sits on the dark ocean background, unlike
+  country/state labels which sit on light land.
+
+**`render.ts`**
+- `ensureLabelFontInstalled`'s `BitmapFont.install` call now bakes the
+  shared glyph atlas in white (`fill: "#ffffff"`), not the canvas default
+  (black) -- see Bugs below.
+
+### Bugs found and fixed
+1. **`SEA_LABEL_STYLE`'s light color rendered as black, not near-white.**
+   `LabelText`'s per-instance `style.color` works by *multiplicatively
+   tinting* the shared `BitmapFont` atlas texture, not repainting it. The
+   atlas had been generated with no explicit `fill`, defaulting to
+   black-inked glyphs -- multiplying black by any color stays black
+   (`0 * x = 0`), so a light tint could never appear regardless of what was
+   requested. Existing dark labels (country/state) happened to still look
+   plausible under this bug (dark-tinting an already-dark texture reads as
+   "close enough"), which is why it went unnoticed until a *light* color
+   was tried and produced visibly wrong (black) text. Caught by sampling
+   actual screenshot pixel colors rather than trusting the configured value
+   was applied. Fixed by baking the atlas in white instead -- the only base
+   color multiplicative tinting can reach *any* requested color from,
+   light or dark -- and reverified existing country/state label colors
+   still render correctly afterward.
+
+### Decisions
+- **Labels-only, no fill/border, by design** -- not a shortcut taken due to
+  time pressure. Marine polygons genuinely don't form a disjoint partition
+  the way countries/lakes do (nesting/overlap is inherent to how Natural
+  Earth categorizes bays-within-gulfs-within-seas), so a filled rendering
+  would need an arbitrary "which one wins the overlap" rule with no
+  correct answer. Keeping the geometry for hit-testing/highlighting only
+  sidesteps that entirely -- the highlight only ever shows *one* sea at a
+  time (whichever was clicked), so overlap never has to be resolved
+  visually.
+- **Reused the existing label collision-priority algorithm instead of a new
+  zoom threshold** -- consistent with how lakes/rivers avoided inventing
+  new zoom-threshold constants where an existing mechanism already applied.
+- **Sea labels independent of both existing label gates
+  (`VITE_SHOW_LABELS`, `STATE_ZOOM_THRESHOLD`)** -- both exist for reasons
+  specific to country/state labels that don't apply to seas.
+
+### Deferred / not yet implemented
+- Cities (explicitly skipped this whole pass, per user request).
+- The pre-existing WebGL `Insufficient buffer size` warning noted in the
+  rivers entry above -- still unfixed, still unrelated to water bodies.
+
+### Water bodies (lakes, rivers, seas) — complete
+All three stages of the water-bodies plan are done. Roadmap Phase 3's
+"Geographic Details" list (states, cities, rivers, lakes) now only has
+cities remaining, deferred per explicit user request rather than started.
+
+---
+
 ## 2026-08-12 — Rivers (Phase 3 water bodies, stage 2 of 3)
 
 ### Summary
