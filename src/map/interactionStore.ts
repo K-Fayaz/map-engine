@@ -6,12 +6,16 @@ import type { Entity } from "./entities";
 // tearing down/rebuilding the map on every hover) and React components
 // (SearchBox, via the hook below). No state-management library is installed
 // in this repo -- this is a minimal plain pub/sub, not a general-purpose
-// store. `selectEntity`/`hoverEntity` are callable from anywhere (pointer
+// store. `toggleEntity`/`hoverEntity` are callable from anywhere (pointer
 // handlers, search results, or later programmatically from Phase 5/6 code),
 // matching architecture.md's "usable manually and through AI" principle.
 interface InteractionState {
   entities: Entity[];
-  selectedEntityId: string | null;
+  // A Set, not a single id -- multi-select (ctrl/cmd+click to add/remove,
+  // like a file manager) needs more than one entity selected at once. See
+  // toggleEntity below for how membership changes; drawHighlights in
+  // MapCanvas.tsx renders every id in here, not just one.
+  selectedEntityIds: Set<string>;
   hoveredEntityId: string | null;
 }
 
@@ -20,7 +24,7 @@ type Listener = () => void;
 function createInteractionStore() {
   let state: InteractionState = {
     entities: [],
-    selectedEntityId: null,
+    selectedEntityIds: new Set(),
     hoveredEntityId: null,
   };
   const listeners = new Set<Listener>();
@@ -41,9 +45,39 @@ function createInteractionStore() {
       state = { ...state, entities };
       emit();
     },
-    selectEntity(id: string | null) {
-      if (state.selectedEntityId === id) return;
-      state = { ...state, selectedEntityId: id };
+    isSelected(id: string): boolean {
+      return state.selectedEntityIds.has(id);
+    },
+    // `additive` is the ctrl/cmd modifier: false replaces the whole
+    // selection with just `id` (or clears it, for `id === null` -- e.g. a
+    // plain click on empty ocean/land); true toggles `id` into/out of the
+    // existing selection, leaving the rest alone, same as a file manager's
+    // ctrl+click. `id === null` with `additive: true` is a deliberate no-op
+    // (ctrl+clicking empty space shouldn't discard a multi-selection) --
+    // callers (MapCanvas.tsx's onPointerUp) shouldn't even call this in that
+    // case, but it's a safe no-op here too if they do.
+    toggleEntity(id: string | null, additive: boolean) {
+      if (id === null) {
+        if (additive || state.selectedEntityIds.size === 0) return;
+        state = { ...state, selectedEntityIds: new Set() };
+        emit();
+        return;
+      }
+
+      if (!additive) {
+        if (state.selectedEntityIds.size === 1 && state.selectedEntityIds.has(id)) return;
+        state = { ...state, selectedEntityIds: new Set([id]) };
+        emit();
+        return;
+      }
+
+      const next = new Set(state.selectedEntityIds);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      state = { ...state, selectedEntityIds: next };
       emit();
     },
     hoverEntity(id: string | null) {

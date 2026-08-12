@@ -368,18 +368,23 @@ export function MapCanvas() {
         // stronger selection highlight would sit underneath a redundant,
         // weaker hover highlight of the exact same shape.
         function drawHighlights() {
-          const { selectedEntityId, hoveredEntityId } = interactionStore.getState();
+          const { selectedEntityIds, hoveredEntityId } = interactionStore.getState();
 
+          // One shared Graphics accumulates every selected entity's shape --
+          // same "many shapes, one Graphics object" approach `land` already
+          // uses for ~topology's worth of polygons, not one object per
+          // selection.
           selectionGraphic.clear();
-          const selected = findById(selectedEntityId);
-          if (selected) {
+          for (const id of selectedEntityIds) {
+            const selected = findById(id);
+            if (!selected) continue;
             const geometry = selected.geometry as AreaGeometry;
             fillGeometry(selectionGraphic, geometry, SELECTION_COLOR, SELECTION_FILL_ALPHA);
             strokeGeometry(selectionGraphic, geometry, SELECTION_COLOR);
           }
 
           hoverGraphic.clear();
-          if (hoveredEntityId && hoveredEntityId !== selectedEntityId) {
+          if (hoveredEntityId && !selectedEntityIds.has(hoveredEntityId)) {
             const hovered = findById(hoveredEntityId);
             // Stroke only, no fill tint -- unlike selection, hover fires on
             // essentially every pointermove (including during a zoom
@@ -586,7 +591,10 @@ export function MapCanvas() {
 
           if (!movedPastClickThreshold) {
             const hit = hitTestScreenPoint(e.offsetX, e.offsetY);
-            interactionStore.selectEntity(hit?.id ?? null);
+            // ctrl (Windows/Linux) or cmd (Mac) held -- same modifier a file
+            // manager uses for multi-select -- toggles the hit entity into/
+            // out of the existing selection instead of replacing it.
+            interactionStore.toggleEntity(hit?.id ?? null, e.ctrlKey || e.metaKey);
           }
         };
 

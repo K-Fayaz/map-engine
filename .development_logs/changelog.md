@@ -5,6 +5,85 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-07 — Multi-select (ctrl/cmd+click)
+
+### Summary
+User-requested: selection was previously single-entity only (clicking a new
+country/state replaced whatever was selected). Added file-manager-style
+multi-select -- ctrl (Windows/Linux) or cmd (Mac) held while clicking adds/
+removes an entity from the selection instead of replacing it, both on the
+map canvas and in the search box's result list.
+
+### Changes
+
+**`interactionStore.ts`**
+- `selectedEntityId: string | null` replaced with `selectedEntityIds:
+  Set<string>`. `selectEntity` removed; replaced by `toggleEntity(id,
+  additive)`: `additive: false` behaves like the old `selectEntity` (replace
+  the whole selection with just `id`, or clear it for `id === null`);
+  `additive: true` toggles `id` into/out of the existing set, leaving
+  everything else selected alone. Added `isSelected(id)` as a convenience
+  read.
+- `toggleEntity(null, additive: true)` -- ctrl/cmd+clicking empty ocean/land
+  -- is a deliberate no-op rather than clearing the selection, matching how
+  a file manager's ctrl+click on empty space doesn't discard a
+  multi-selection. Only a plain (non-additive) click on empty space clears
+  everything.
+
+**`MapCanvas.tsx`**
+- `onPointerUp` reads `e.ctrlKey || e.metaKey` off the `PointerEvent` and
+  passes it straight through as `toggleEntity`'s `additive` flag -- no new
+  state, the browser already gives this for free on every pointer event.
+- `drawHighlights()`'s selection branch now loops over every id in
+  `selectedEntityIds`, accumulating each one's fill+stroke into the same
+  persistent `selectionGraphic` -- same "many shapes, one Graphics object"
+  approach `land` already uses, not one Graphics per selected entity. Hover
+  suppression (skip drawing the hover outline if it matches a selection)
+  changed from an `!==` check against a single id to `!selectedEntityIds.
+  has(hoveredEntityId)`.
+
+**`SearchBox.tsx`**
+- The single "selected" panel became a list, one row per selected entity,
+  each with its own `×` to deselect just that one (`toggleEntity(id,
+  true)`), plus a "Clear all (N)" button once more than one is selected
+  (`toggleEntity(null, false)`).
+- Clicking a search result now also respects ctrl/cmd: plain click replaces
+  the selection with just that result (and clears the query, as before);
+  ctrl/cmd+click adds it to the existing selection and deliberately leaves
+  the query/results open, so several results can be ctrl+clicked in a row
+  without retyping the search each time.
+
+### Decisions
+- **Ctrl/cmd+click on empty space is a no-op, not a clear** -- confirmed
+  with the user against the alternative (any click on empty space always
+  clears). Matches the OS-level multi-select convention this feature is
+  explicitly modeled on.
+- **No shift-click range-select.** A set of countries/states has no natural
+  ordering to range over the way a file list or spreadsheet does, so this
+  was skipped rather than inventing an arbitrary one.
+- **Hover stays single-entity.** Ctrl+hover isn't a meaningful concept the
+  way ctrl+click is -- hover only ever reflects "what's under the cursor
+  right now."
+- **No new `clearAll` method** -- `toggleEntity(null, false)` already
+  expresses "clear everything," reused for the search box's "Clear all"
+  button rather than adding a second way to do the same thing.
+
+### Deferred / not yet implemented
+- In-app interactive verification of this feature was explicitly skipped
+  for this pass (user request) -- `tsc --noEmit` is clean and a full sweep
+  confirmed no leftover references to the removed `selectEntity`/
+  `selectedEntityId` API anywhere in `src/`, but the actual click/ctrl-click
+  behavior in a running browser has not been exercised. Worth an actual
+  pointer-driven pass (plain click, ctrl+click add, ctrl+click remove,
+  ctrl+click empty space, search-box ctrl+click, "Clear all") before relying
+  on this in a demo.
+- No visual distinction between "just hovered" and "one of several selected"
+  beyond the existing hover/selection styling -- multiple selected entities
+  all render with the same `SELECTION_COLOR`, there's no per-entity ordering
+  or numbering shown anywhere (e.g. "1st selected", "2nd selected").
+
+---
+
 ## 2026-08-05 — India boundary corrected to include Aksai Chin / PoK
 
 ### Summary
