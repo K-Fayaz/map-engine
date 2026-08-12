@@ -69,11 +69,6 @@ const LAKE_BORDER_COLOR = 0x04697b;
 // Same water hue as a lake's border -- a river is a thin ribbon of the same
 // substance, no separate color needed.
 const RIVER_COLOR = LAKE_BORDER_COLOR;
-// Sea labels' centroids typically fall on open water (the dark teal
-// OCEAN_COLOR background), not land -- a light, near-white color reads far
-// better there than DEFAULT_LABEL_STYLE's dark gray (tuned for the cream
-// land fill country/state labels sit on).
-const SEA_LABEL_STYLE: LabelStyle = { fontSize: 12, color: 0xe8f4f8 };
 
 // How far past the default view (world exactly fills the screen) the user
 // can zoom in. Arbitrary reasonable cap for V1 -- there's no Phase 3
@@ -359,14 +354,17 @@ export function MapCanvas() {
         }
         worldContainer.addChild(lakesLayer);
 
-        // Seas have no visible layer at all, unlike every other water
-        // body -- see entities.ts's buildSeaEntities comment for why
-        // (marine regions overlap/nest in ways that don't render sensibly
-        // as disjoint filled areas). The geometry still exists purely for
-        // hit-testing (see hitTestScreenPoint) and the highlight overlay
-        // (drawHighlights, which already handles AreaGeometry -- a sea
-        // needs no special-casing there the way a river did). Only the
-        // *label* renders by default -- see seaLabelObjects below.
+        // Seas have no visible layer and no label at all by default --
+        // see entities.ts's buildSeaEntities comment for why (marine
+        // regions overlap/nest in ways that don't render sensibly as
+        // disjoint filled areas, and a permanently-visible label for all
+        // 306 was explicit user feedback: too cluttered). The geometry
+        // still exists purely for hit-testing (see hitTestScreenPoint) and
+        // the highlight overlay (drawHighlights, which already handles
+        // AreaGeometry -- a sea needs no special-casing there the way a
+        // river did) -- clicking or searching a sea still selects and
+        // highlights it exactly like every other entity, just without a
+        // permanently-rendered name.
         const seaEntities = buildSeaEntities(loadSeasData());
 
         // Feeds Phase 4 interaction (search, and eventually anything else
@@ -423,23 +421,6 @@ export function MapCanvas() {
         const stateLabelsLayer = new Container();
         stateLabelsLayer.visible = false;
         worldContainer.addChild(stateLabelsLayer);
-
-        // Sea labels are independent of SHOW_LABELS -- that flag exists
-        // specifically to hide the *known, unresolved* state-layer label
-        // overlap bug (see changelog) from a fresh clone; seas are new and
-        // don't share that problem, so gating them behind the same flag
-        // would hide a working feature for an unrelated reason. Always
-        // visible (no zoom-based show/hide the way country/state labels
-        // swap at STATE_ZOOM_THRESHOLD) -- ocean/sea names stay relevant
-        // at any zoom, unlike the political-label handoff. Collision
-        // priority (via computeArea, same as country/state) naturally
-        // keeps big oceans visible over small straits/bays without needing
-        // an explicit reveal threshold of its own.
-        const seaLabelObjects = buildLabelEntities(seaEntities).map(
-          (entity) => new LabelText(entity, SEA_LABEL_STYLE),
-        );
-        const seaLabelsLayer = new Container();
-        worldContainer.addChild(seaLabelsLayer);
 
         // Selection/hover highlight -- last child of worldContainer so it
         // renders above labels too, avoiding having to pick between the two
@@ -618,7 +599,6 @@ export function MapCanvas() {
           setVisibleAtOrBelowZoom(countryLabelsLayer, current.zoom, STATE_ZOOM_THRESHOLD);
           counterScaleLabelLayer(countryLabelsLayer, baseScaleX, baseScaleY, current.zoom);
           counterScaleLabelLayer(stateLabelsLayer, baseScaleX, baseScaleY, current.zoom);
-          counterScaleLabelLayer(seaLabelsLayer, baseScaleX, baseScaleY, current.zoom);
         }
         applyCameraTransform();
 
@@ -795,24 +775,15 @@ export function MapCanvas() {
         // counterScaleLabelLayer only updates for already-attached
         // children, so a label becoming a candidate for the first time this
         // cycle needs that correction applied here explicitly too.
-        // Extracted from declutterLabels so the same viewport-cull +
-        // collision-placement pass can run over more than one independent
-        // label tier per cycle (country/state -- mutually exclusive, only
-        // one active at a time -- and now sea labels, always active
-        // regardless of which of those two is showing). Collision
-        // placement is scoped to whichever `layer`/`allLabels` pair is
-        // passed in, not global -- a sea label and a country label can
-        // still visually overlap each other; only same-layer labels compete
-        // for space. Same already-accepted gap Phase 3b's changelog entry
-        // flagged for country-vs-state labels, just one more layer pairing
-        // it now applies to.
-        function declutterLabelLayer(
-          layer: Container,
-          allLabels: LabelText[],
-          bounds: ReturnType<typeof viewportWorldBounds>,
-          scaleX: number,
-          scaleY: number,
-        ) {
+        function declutterLabels() {
+          const isStates = current.zoom > STATE_ZOOM_THRESHOLD;
+          const layer = isStates ? stateLabelsLayer : countryLabelsLayer;
+          const allLabels = isStates ? stateLabelObjects : countryLabelObjects;
+          const { width, height } = app.screen;
+          const bounds = viewportWorldBounds(current, width, height, baseScaleX, baseScaleY);
+          const scaleX = baseScaleX * current.zoom;
+          const scaleY = baseScaleY * current.zoom;
+
           const candidates: LabelCandidate[] = [];
           const candidateLabels: LabelText[] = [];
 
@@ -846,19 +817,6 @@ export function MapCanvas() {
               layer.removeChild(label);
             }
           }
-        }
-
-        function declutterLabels() {
-          const isStates = current.zoom > STATE_ZOOM_THRESHOLD;
-          const layer = isStates ? stateLabelsLayer : countryLabelsLayer;
-          const allLabels = isStates ? stateLabelObjects : countryLabelObjects;
-          const { width, height } = app.screen;
-          const bounds = viewportWorldBounds(current, width, height, baseScaleX, baseScaleY);
-          const scaleX = baseScaleX * current.zoom;
-          const scaleY = baseScaleY * current.zoom;
-
-          declutterLabelLayer(layer, allLabels, bounds, scaleX, scaleY);
-          declutterLabelLayer(seaLabelsLayer, seaLabelObjects, bounds, scaleX, scaleY);
         }
 
         // Same viewport-cull idea as declutterLabels, applied to the states

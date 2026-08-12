@@ -5,6 +5,43 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-12 — Sea/ocean labels removed entirely (follow-up to Stage 3)
+
+### Summary
+Same-day follow-up to the Seas entry directly below. User feedback after
+seeing it live: a permanently-visible label for all 306 seas/oceans/gulfs/
+bays/straits was too cluttered, even with the existing collision-placement
+pass culling most of them at any given zoom. First discussed a middle
+ground (show a sea's label only while it's selected or searched, piggy-
+backing on `drawHighlights`), but once it was clear plain removal was
+simpler and matched what the user actually wanted, went with that instead.
+
+### Changes
+
+**`MapCanvas.tsx`**
+- Removed `seaLabelsLayer`, `seaLabelObjects`, `SEA_LABEL_STYLE`, and their
+  `counterScaleLabelLayer`/declutter call sites entirely. Seas now render
+  no label at all, ever, by default.
+- `declutterLabels` reverted from the `declutterLabelLayer`-extraction
+  refactor back to a single-purpose function -- with the sea pass gone,
+  there was only one call site left, so the extra indirection introduced
+  purely to support a second layer no longer earned its keep.
+
+### Decisions
+- **Selection/search behavior deliberately left untouched** -- `seaEntities`,
+  `interactionStore.setEntities`, `hitTestScreenPoint`'s sea fallback, and
+  `drawHighlights`'s fill+stroke overlay never depended on the label layer;
+  removing labels only removes the permanent text, not the ability to
+  click or search a sea and see it highlighted. Verified in-browser:
+  searched "Mediterranean", selected it, highlight rendered correctly with
+  no label text visible anywhere on the map.
+- **Full removal over the discussed "label on selection" middle ground** --
+  simpler, and what the user actually asked for once the tradeoff was
+  clear; the selection highlight itself already conveys "this is the thing
+  you selected" without needing a text label alongside it.
+
+---
+
 ## 2026-08-12 — Seas (Phase 3 water bodies, stage 3 of 3 — water bodies complete)
 
 ### Summary
