@@ -49,6 +49,13 @@ import { interactionStore } from "./interactionStore";
 // server restart / rebuild.
 const SHOW_LABELS = import.meta.env.VITE_SHOW_LABELS === "true";
 
+// Same gating pattern as SHOW_LABELS above, off by default per user
+// request. Only gates the visible line rendering -- riverEntities are
+// still built and fed into interactionStore/hitTestScreenPoint regardless,
+// so rivers stay selectable via click and search even with this off (see
+// riversLayer below and findRiverAt's call site).
+const SHOW_RIVERS = import.meta.env.VITE_SHOW_RIVERS === "true";
+
 const OCEAN_COLOR = 0x068494;
 const LAND_COLOR = 0xf5f5f2;
 // Lighter than render.ts's country BORDER_COLOR (0x4a4a4a) so state
@@ -328,14 +335,24 @@ export function MapCanvas() {
         // "no ~4600-entity perf concern, no culling needed" reasoning as
         // lakes below (490 rivers). No CountryContainer here -- a river has
         // no fill, just a single Graphics per entity holding its stroke.
+        //
+        // riverEntities is always built, regardless of SHOW_RIVERS -- it
+        // feeds search/click-selection (interactionStore, hitTestScreenPoint
+        // below) independently of whether the lines themselves are drawn.
+        // Only the visible Graphics/layer construction is skipped when the
+        // flag is off, same "skip the cost entirely, not just hide the
+        // result" approach SHOW_LABELS already uses for country/state
+        // labels.
         const riverEntities = buildRiverEntities(loadRiversData());
-        const riversLayer = new Container();
-        for (const entity of riverEntities) {
-          const g = new Graphics();
-          strokeLine(g, entity.geometry as LineGeometry, RIVER_COLOR);
-          riversLayer.addChild(g);
+        if (SHOW_RIVERS) {
+          const riversLayer = new Container();
+          for (const entity of riverEntities) {
+            const g = new Graphics();
+            strokeLine(g, entity.geometry as LineGeometry, RIVER_COLOR);
+            riversLayer.addChild(g);
+          }
+          worldContainer.addChild(riversLayer);
         }
-        worldContainer.addChild(riversLayer);
 
         // Lakes sit above states in architecture.md's layer order -- a lake
         // spanning a state (or country) border should read as one unbroken

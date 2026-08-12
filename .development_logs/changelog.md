@@ -5,6 +5,55 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-12 — Rivers gated behind VITE_SHOW_RIVERS (follow-up)
+
+### Summary
+User request, same day as the water-bodies work above: gate river
+rendering behind a build-time env flag, mirroring `VITE_SHOW_LABELS`'s
+existing pattern exactly, off by default. Unlike that flag (which skips
+building the label objects entirely when off), rivers needed a narrower
+cut: `riverEntities` must still exist even with the flag off, since the
+user explicitly wants rivers to stay selectable via both click and search
+regardless of whether the lines are drawn.
+
+### Changes
+
+**`.env`**
+- New `VITE_SHOW_RIVERS=false`, documented the same way `VITE_SHOW_LABELS`
+  already is.
+
+**`MapCanvas.tsx`**
+- New `SHOW_RIVERS = import.meta.env.VITE_SHOW_RIVERS === "true"` constant.
+- `riverEntities = buildRiverEntities(...)` stays unconditional -- it feeds
+  `interactionStore.setEntities`, `allEntities` (for the highlight overlay),
+  and `hitTestScreenPoint`'s `findRiverAt` call regardless of the flag.
+  Only the `riversLayer` construction (building each river's `Graphics`,
+  calling `strokeLine`, adding the layer to `worldContainer`) is now inside
+  `if (SHOW_RIVERS) { ... }` -- when off, that whole block plus its
+  per-river `strokeLine` draw calls are skipped entirely, not just hidden,
+  same "skip the cost, not just hide the result" approach `SHOW_LABELS`
+  already established for country/state labels.
+
+### Decisions
+- **Entities always built, only the visible layer gated** -- a narrower cut
+  than `SHOW_LABELS` (which skips `buildLabelEntities` entirely when off)
+  because labels are a pure display derivative with no independent
+  interaction value, while rivers are real selectable entities the user
+  explicitly wants reachable via click and search even when not drawn.
+- **Not verified live in-browser this pass** -- the chrome-devtools MCP
+  session hit a stale-profile lock conflict from a leftover browser
+  instance and wouldn't reconnect; killing Chrome processes blindly to
+  force a retry risked disrupting a different, possibly-still-active
+  session, so this was left unverified visually rather than risking that.
+  Confidence instead comes from `tsc --noEmit` passing clean and the change
+  being a narrow conditional wrapped around code that was already
+  browser-verified working in the Rivers stage above -- worth an actual
+  visual check (`VITE_SHOW_RIVERS=true` in `.env.local`, confirm rivers
+  render; default `false`, confirm they don't but search/click still finds
+  them) next time the environment is available.
+
+---
+
 ## 2026-08-12 — Sea/ocean labels removed entirely (follow-up to Stage 3)
 
 ### Summary
