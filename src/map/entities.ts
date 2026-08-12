@@ -18,7 +18,7 @@ export interface BoundingBox {
   maxLat: number;
 }
 
-export type EntityType = "country" | "state" | "label";
+export type EntityType = "country" | "state" | "label" | "lake";
 
 export interface Entity {
   id: string;
@@ -342,6 +342,63 @@ export function buildStateEntities(
       boundingBox: computeBoundingBox(f.geometry),
     };
   });
+}
+
+// Natural Earth's ne_10m_lakes, unlike states, has no parent-linkage field
+// to join against -- a lake doesn't belong to a country the way a state
+// does, so there's no equivalent of buildStateEntities' alpha3->numeric
+// bridge here. Trimmed to just `name` (+ `ne_id`, kept only so it can be
+// used as each feature's stable unique id -- see below) when vendoring
+// lakes-10m.json.
+export interface LakeGeoFeature {
+  type: "Feature";
+  // Natural Earth's own globally-unique running id (`ne_id`), set as this
+  // feature's topojson id at vendoring time. Countries/states use their own
+  // id schemes (ISO numeric, adm1_code) instead -- lakes have no equivalent
+  // natural key, so this is the only stable id available. Numeric, unlike
+  // GeoFeature.id elsewhere in this codebase (which is always a string) --
+  // buildLakeEntities converts it.
+  id?: number;
+  properties: { name?: string };
+  // Nullable, unlike every other GeoFeature-shaped type in this codebase --
+  // see buildLakeEntities' comment on the one vendored lake that actually
+  // hits this.
+  geometry: AreaGeometry | null;
+}
+
+export interface LakeGeoFeatureCollection {
+  type: "FeatureCollection";
+  features: LakeGeoFeature[];
+}
+
+// ~2% of lakes in the vendored data (102 of 434) have no `name` in Natural
+// Earth's own data (and no `name_alt` fallback either) -- rather than
+// dropping them (they're still real water bodies that should render), they
+// get the same `name: ""` fallback buildCountryEntities/buildStateEntities
+// already use for a missing name. An empty name just never matches a
+// search query and shows a blank label if one were ever added -- not a
+// crash, not a collision (id comes from `ne_id`, not `name`).
+//
+// One feature (of the 434) is dropped here, not just name-defaulted:
+// mapshaper's simplify pass flagged a single self-intersection in the
+// source data it couldn't repair (see the vendoring notes for
+// lakes-10m.json), and topojson-client's feature() turns that lake's
+// geometry into `null` rather than a usable (if degenerate) shape --
+// nothing left to compute a bounding box for or render. Unlike the
+// unmatched-parent states above, this genuinely has no geometry to keep,
+// so filtering it out (rather than keeping a warning-logged entity with a
+// missing geometry, which would just move the crash to every downstream
+// consumer instead of preventing it) is the right call here.
+export function buildLakeEntities(lakes: LakeGeoFeatureCollection): Entity[] {
+  return lakes.features
+    .filter((f): f is LakeGeoFeature & { geometry: AreaGeometry } => f.geometry != null)
+    .map((f) => ({
+      id: `lake-${f.id ?? ""}`,
+      name: f.properties.name ?? "",
+      type: "lake",
+      geometry: f.geometry,
+      boundingBox: computeBoundingBox(f.geometry),
+    }));
 }
 
 // Below this raw-shoelace area, a country's label shows its ISO alpha-3

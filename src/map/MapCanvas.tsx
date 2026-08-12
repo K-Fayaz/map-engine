@@ -2,9 +2,11 @@ import { useEffect, useRef } from "react";
 import { Application, Container, Graphics } from "pixi.js";
 import { loadWorldData, INDIA_COUNTRY_ID, type Resolution, type AreaGeometry } from "./loadWorldData";
 import { loadStatesData } from "./loadStatesData";
+import { loadLakesData } from "./loadLakesData";
 import {
   buildCountryEntities,
   buildStateEntities,
+  buildLakeEntities,
   buildLabelEntities,
   findEntityAt,
   type Entity,
@@ -51,6 +53,13 @@ const STATE_BORDER_COLOR = 0xa8a8a8;
 // Smaller and lighter than render.ts's default label style, same
 // subordinate-to-country relationship as STATE_BORDER_COLOR above.
 const STATE_LABEL_STYLE: LabelStyle = { fontSize: 10, color: 0x555555 };
+// Lakes are the same substance as the ocean background, so they share its
+// color -- reads as "this is water" for free rather than needing a second
+// water hue. Border is a touch darker (same subordinate-color idea as
+// STATE_BORDER_COLOR) purely so a lake's edge stays visible against the
+// land fill it sits on; pixelLine ignores width, same reasoning as before.
+const LAKE_COLOR = OCEAN_COLOR;
+const LAKE_BORDER_COLOR = 0x04697b;
 
 // How far past the default view (world exactly fills the screen) the user
 // can zoom in. Arbitrary reasonable cap for V1 -- there's no Phase 3
@@ -296,11 +305,28 @@ export function MapCanvas() {
         });
         worldContainer.addChild(statesLayer);
 
+        // Lakes sit above states in architecture.md's layer order -- a lake
+        // spanning a state (or country) border should read as one unbroken
+        // water shape on top, not interrupted by the border line underneath
+        // it. Unlike states, there's no ~4600-entity perf concern here (434
+        // lakes, comparable to the 241-country layer that's never needed
+        // culling), so every lake container is just added as a permanent
+        // child up front -- no viewport culling, no zoom-gated reveal.
+        const lakeEntities = buildLakeEntities(loadLakesData());
+        const lakesLayer = new Container();
+        for (const entity of lakeEntities) {
+          const c = new CountryContainer(entity);
+          fillGeometry(c.fill, entity.geometry as AreaGeometry, LAKE_COLOR);
+          strokeGeometry(c.stroke, entity.geometry as AreaGeometry, LAKE_BORDER_COLOR);
+          lakesLayer.addChild(c);
+        }
+        worldContainer.addChild(lakesLayer);
+
         // Feeds Phase 4 interaction (search, and eventually anything else
         // that needs to look an entity up by id from outside this effect) --
-        // countries and states only, no labels (they're derived display
-        // artifacts, not user-facing selectable entities).
-        interactionStore.setEntities([...borderEntities, ...stateEntities]);
+        // countries, states, and lakes only, no labels (they're derived
+        // display artifacts, not user-facing selectable entities).
+        interactionStore.setEntities([...borderEntities, ...stateEntities, ...lakeEntities]);
 
         // Labels sit above everything (see architecture.md's layer list --
         // Labels is the topmost layer). They're children of worldContainer
@@ -357,7 +383,7 @@ export function MapCanvas() {
         highlightLayer.addChild(selectionGraphic);
         worldContainer.addChild(highlightLayer);
 
-        const allEntities = [...borderEntities, ...stateEntities];
+        const allEntities = [...borderEntities, ...stateEntities, ...lakeEntities];
         function findById(id: string | null): Entity | undefined {
           if (!id) return undefined;
           return allEntities.find((e) => e.id === id);
@@ -518,9 +544,16 @@ export function MapCanvas() {
         // currently active for interaction -- states once zoomed in past
         // STATE_ZOOM_THRESHOLD, countries otherwise. Same threshold
         // declutterLabels uses for the same "which layer is live" question.
+        // Lakes are checked first, regardless of zoom: they paint on top of
+        // both layers (see lakesLayer above), so a click inside one should
+        // resolve to the lake, matching what's actually visible, the same
+        // "hit-test priority follows paint order" reasoning already applied
+        // to India's re-added-on-top container elsewhere in this file.
         function hitTestScreenPoint(screenX: number, screenY: number): Entity | undefined {
           const [wx, wy] = screenToWorld(current, screenX, screenY, baseScaleX, baseScaleY);
           const [lon, lat] = unproject(wx, wy);
+          const lakeHit = findEntityAt(lakeEntities, lon, lat);
+          if (lakeHit) return lakeHit;
           const candidates = current.zoom > STATE_ZOOM_THRESHOLD ? stateEntities : borderEntities;
           return findEntityAt(candidates, lon, lat);
         }

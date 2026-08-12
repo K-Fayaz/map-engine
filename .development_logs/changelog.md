@@ -5,6 +5,88 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-12 — Lakes (Phase 3 water bodies, stage 1 of 3)
+
+### Summary
+First stage of the remaining Phase 3 water-body work (lakes, rivers, seas
+-- see `.development_logs/plan-water-bodies.md`; cities explicitly out of
+scope, skipped per user request). Lakes were the smallest step: mechanically
+identical to Phase 3a's state vendoring (polygon in, polygon out), reusing
+every existing rendering/hit-test primitive with no new geometry type.
+
+### Changes
+
+**New vendored data (`src/map/data/lakes-10m.json`)**
+- Natural Earth's `ne_10m_lakes`, filtered to `scalerank <= 6` (434 of the
+  source's 1355 features) so minor ponds don't clutter the map, same
+  complexity-budget reasoning as Phase 2's country-detail lesson.
+  Simplified 8% via mapshaper (Smallwood Reservoir alone was ~24k points,
+  ~23% of the filtered set's total), trimmed to `name` + `ne_id` (the
+  latter kept only to serve as each feature's id -- lakes have no natural
+  key the way countries/states do). Vendored as TopoJSON, matching
+  `states-10m.json`'s convention rather than raw GeoJSON.
+
+**`entities.ts`**
+- `EntityType` gained `"lake"`. New `LakeGeoFeature`/`LakeGeoFeatureCollection`
+  types and `buildLakeEntities()` -- same shape as `buildCountryEntities`,
+  no parent linkage (a lake doesn't belong to a country the way a state
+  does). Filters out one feature whose geometry comes back `null` from
+  topojson-client -- mapshaper's simplify pass flagged a single
+  self-intersection in the source data it couldn't repair, which collapses
+  that lake's geometry entirely rather than leaving a degenerate-but-usable
+  shape. 433 of 434 render. ~2% of lakes (102) have no `name` in the source
+  data; kept anyway with the same `name: ""` fallback
+  `buildCountryEntities`/`buildStateEntities` already use for a missing
+  name, rather than dropping them.
+
+**`loadLakesData.ts` (new)**
+- Mirrors `loadStatesData.ts` -- single resolution, no LOD pair (no
+  perf/detail reason for one, same as states).
+
+**`MapCanvas.tsx`**
+- New `lakesLayer`, added after `statesLayer` per architecture.md's layer
+  order (Countries → States → ... → Lakes) -- a lake spanning a state or
+  country border reads as one unbroken water shape on top, not interrupted
+  by the border line underneath. Every lake container is added as a
+  permanent child up front, no viewport culling or zoom-gated reveal: at
+  434 entities this is comparable to the always-visible 241-country layer,
+  not the ~4600-entity states layer that needed culling.
+  `LAKE_COLOR = OCEAN_COLOR` (a lake is the same substance as the ocean, so
+  it reads as water for free); `LAKE_BORDER_COLOR` a shade darker, same
+  "subordinate color, not width" idea as `STATE_BORDER_COLOR` (pixelLine
+  ignores width entirely).
+- `hitTestScreenPoint` now checks lakes first, unconditionally, before
+  falling through to the existing state/country candidate list -- lakes
+  paint on top of both, so hit-test priority should match paint order, the
+  same reasoning already applied to India's re-added-on-top container.
+- `lakeEntities` folded into `interactionStore.setEntities(...)` and the
+  highlight overlay's `allEntities` lookup -- search and click-to-select
+  work identically to countries/states with no changes needed in
+  `SearchBox.tsx` or `interactionStore.ts` (both already generic over any
+  entity type).
+
+### Decisions
+- **No reveal zoom threshold for lakes** -- always visible, same tier as
+  countries. States needed a threshold + viewport culling specifically
+  because of their ~4600-entity count; lakes' post-filter count (434) never
+  hits that problem, so adding threshold/culling machinery for it would
+  have been unjustified complexity.
+- **Hit-test priority follows paint order, not zoom-tier candidate lists**
+  -- lakes are checked before whichever of states/countries is "active" for
+  the current zoom, since they're always the topmost of the three visually.
+- **Dropped, not warned-and-kept, for the one null-geometry lake** -- unlike
+  `buildStateEntities`' unmatched-parent states (kept with a warning, since
+  they still have valid geometry to render), there's no partial value in
+  keeping an entity with no geometry at all; every downstream consumer
+  (`computeBoundingBox`, rendering, hit-testing) would need a null-check
+  instead of this one filter.
+
+### Deferred / not yet implemented
+- Rivers, seas (stages 2/3 of the water-bodies plan).
+- Cities (explicitly skipped this pass, per user request).
+
+---
+
 ## 2026-08-07 — Multi-select (ctrl/cmd+click)
 
 ### Summary
