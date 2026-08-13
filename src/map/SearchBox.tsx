@@ -88,10 +88,15 @@ export function SearchBox() {
   // modifier the map canvas uses -- plain click replaces the selection with
   // just this entity (and closes the results, like before). Additive clicks
   // deliberately leave the query/results open so several results can be
-  // ctrl+clicked in a row without retyping.
+  // ctrl+clicked in a row without retyping. Only a plain click also flies
+  // the camera there -- with more than one entity selected via ctrl+click
+  // there's no single unambiguous target to frame.
   const selectResult = (entity: Entity, additive: boolean) => {
     interactionStore.toggleEntity(entity.id, additive);
-    if (!additive) setQuery("");
+    if (!additive) {
+      interactionStore.requestFocus(entity.id);
+      setQuery("");
+    }
   };
 
   return (

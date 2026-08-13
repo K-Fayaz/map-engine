@@ -20,6 +20,7 @@ interface InteractionState {
 }
 
 type Listener = () => void;
+type FocusListener = (id: string) => void;
 
 function createInteractionStore() {
   let state: InteractionState = {
@@ -28,6 +29,12 @@ function createInteractionStore() {
     hoveredEntityId: null,
   };
   const listeners = new Set<Listener>();
+  // Separate from `listeners`/`emit` above -- a focus request (e.g. "fly the
+  // camera to this entity") isn't a state change, so it shouldn't also
+  // trigger unrelated state subscribers like MapCanvas.tsx's
+  // drawHighlights. Kept as its own channel so callers can react to "fly to
+  // X" without it being entangled with selection/hover state.
+  const focusListeners = new Set<FocusListener>();
 
   function emit() {
     for (const listener of listeners) listener();
@@ -98,6 +105,18 @@ function createInteractionStore() {
         }
       }
       return results;
+    },
+    // "Fly the camera to this entity" -- currently fired only by SearchBox's
+    // non-additive select. Decoupled from toggleEntity/selection on purpose
+    // (see focusListeners comment above): a caller can request a focus
+    // without also changing selection, and selection changes never
+    // implicitly trigger a focus.
+    onFocusRequest(listener: FocusListener): () => void {
+      focusListeners.add(listener);
+      return () => focusListeners.delete(listener);
+    },
+    requestFocus(id: string) {
+      for (const listener of focusListeners) listener(id);
     },
   };
 }

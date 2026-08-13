@@ -37,6 +37,7 @@ import {
   lerpCamera,
   viewportWorldBounds,
   screenToWorld,
+  focusOnBounds,
 } from "./camera";
 import { placeLabelsWithoutOverlap, type LabelCandidate } from "./labelLayout";
 import { interactionStore } from "./interactionStore";
@@ -184,6 +185,7 @@ export function MapCanvas() {
     // cleanup must actually unsubscribe or it leaks one subscriber per
     // discarded mount.
     let unsubscribeInteraction: (() => void) | null = null;
+    let unsubscribeFocus: (() => void) | null = null;
 
     app
       .init({
@@ -895,6 +897,31 @@ export function MapCanvas() {
         unsubscribeInteraction = interactionStore.subscribe(drawHighlights);
         drawHighlights();
 
+        // Fly the camera to fit whatever entity SearchBox just requested
+        // focus for (see interactionStore.requestFocus). Decoupled from
+        // drawHighlights above -- a focus request isn't itself a
+        // selection/hover state change. Only sets `target`; the ticker's
+        // lerpCamera (applyCameraTransform above) eases `current` toward it
+        // every frame, same as wheel-zoom does.
+        unsubscribeFocus = interactionStore.onFocusRequest((id) => {
+          const entity = findById(id);
+          if (!entity) return;
+          const { width, height } = app.screen;
+          const bb = entity.boundingBox;
+          // project()'s y is inverted (higher lat -> smaller y), so minLat
+          // maps to the world-space maxY and maxLat maps to minY.
+          const [minX, maxY] = project(bb.minLon, bb.minLat);
+          const [maxX, minY] = project(bb.maxLon, bb.maxLat);
+          target = focusOnBounds(
+            { minX, minY, maxX, maxY },
+            width,
+            height,
+            baseScaleX,
+            baseScaleY,
+            MAX_ZOOM,
+          );
+        });
+
         // Wheel zoom: cursor-anchored, eased (only `target` is set here --
         // the ticker's lerpCamera above carries `current` toward it). Based
         // on `target` rather than `current` so repeated fast wheel ticks
@@ -930,6 +957,7 @@ export function MapCanvas() {
     return () => {
       cancelled = true;
       unsubscribeInteraction?.();
+      unsubscribeFocus?.();
       if (app.renderer) {
         // releaseGlobalResources clears Pixi's pooled batcher buffers on
         // cleanup -- without it, React.StrictMode's dev-mode double-invoke

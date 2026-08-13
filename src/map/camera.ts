@@ -100,6 +100,41 @@ export interface WorldBounds {
   maxY: number;
 }
 
+// Guards a near-zero-size bounds (e.g. a point-like entity) from producing
+// Infinity/NaN zoom in focusOnBounds below.
+const MIN_BOUNDS_SPAN = 0.5;
+
+// Computes the Camera needed to fit `bounds` (world-space, same space
+// render.ts's project() outputs -- see viewportWorldBounds above) within the
+// viewport, centered, with `padding` of headroom on all sides. Takes
+// WorldBounds rather than raw lon/lat so this file stays free of a
+// render.ts/project() dependency -- callers project() an entity's lon/lat
+// boundingBox into world space first.
+export function focusOnBounds(
+  bounds: WorldBounds,
+  screenWidth: number,
+  screenHeight: number,
+  baseScaleX: number,
+  baseScaleY: number,
+  maxZoom: number,
+  padding = 0.8,
+): Camera {
+  const worldW = Math.max(bounds.maxX - bounds.minX, MIN_BOUNDS_SPAN);
+  const worldH = Math.max(bounds.maxY - bounds.minY, MIN_BOUNDS_SPAN);
+
+  const zoomX = (screenWidth * padding) / (worldW * baseScaleX);
+  const zoomY = (screenHeight * padding) / (worldH * baseScaleY);
+  const zoom = Math.max(MIN_ZOOM, Math.min(zoomX, zoomY, maxZoom));
+
+  const centerX = (bounds.minX + bounds.maxX) / 2;
+  const centerY = (bounds.minY + bounds.maxY) / 2;
+
+  const x = screenWidth / 2 - centerX * baseScaleX * zoom;
+  const y = screenHeight / 2 - centerY * baseScaleY * zoom;
+
+  return clampCamera({ x, y, zoom }, screenWidth, screenHeight, maxZoom);
+}
+
 // The world-space rectangle (same coordinate space render.ts's `project()`
 // outputs, and what each label's `.position` is set to) currently visible
 // on screen -- the inverse of the transform MapCanvas.tsx's ticker applies
