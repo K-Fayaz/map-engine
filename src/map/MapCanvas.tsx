@@ -508,7 +508,16 @@ export function MapCanvas() {
             // cheap regardless of how often hover changes. Rivers have no
             // fill option in the first place (see the selection branch
             // above), so strokeLine is the only real choice there too.
-            if (hovered) {
+            // Seas are deliberately excluded from hover feedback -- unlike
+            // every other entity type, a sea's real polygon boundary is
+            // often huge and antimeridian-spanning (e.g. the Pacific), so
+            // stroking it on hover draws a distracting border across most of
+            // the map instead of a small, readable outline. Still fully
+            // selectable/highlightable via search (see SearchBox.tsx's
+            // requestFocus) and via a direct click (selectionGraphic above,
+            // unaffected by this) -- only the passive hover stroke is
+            // suppressed.
+            if (hovered && hovered.type !== "sea") {
               if (hovered.geometry.type === "LineString" || hovered.geometry.type === "MultiLineString") {
                 strokeLine(hoverGraphic, hovered.geometry, HOVER_COLOR);
               } else {
