@@ -5,6 +5,113 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-13 — Sea/ocean hover highlight suppressed (follow-up)
+
+### Summary
+Same-day follow-up to the camera fly-to entry above. User-reported: hovering
+over open ocean bordered the whole sea/ocean polygon, which for
+antimeridian-spanning seas (Pacific, Southern Ocean, ...) draws a huge,
+distracting stroke across most of the visible map instead of a small,
+readable outline. Confirmed scope with the user before touching anything:
+fix hover only, leave direct click-to-select and search-to-select on seas
+working exactly as before.
+
+### Changes
+
+**`MapCanvas.tsx`**
+- `drawHighlights()`'s hover branch now skips the stroke entirely when
+  `hovered.type === "sea"` -- `hoverGraphic` is left empty for seas, no
+  border drawn on hover. Selection (`selectionGraphic`, driven by direct
+  click or search) is untouched -- clicking a sea directly still highlights
+  it, same as searching one does.
+
+### Decisions
+- **Hover-only fix, not a hit-testing change** -- confirmed with the user
+  against the alternative (seas fully inert to direct map interaction,
+  selectable only via search). Chosen as the smaller, more contained change:
+  `hitTestScreenPoint`/`findEntityAt` and the click-selection path are
+  untouched, only the passive hover stroke is suppressed.
+
+---
+
+## 2026-08-13 — Camera fly-to on search select (Phase 5, first step)
+
+### Summary
+First piece of roadmap Phase 5 (Smart Camera), which had been entirely
+unimplemented until now -- selecting an entity previously only highlighted
+it in place, with no camera reaction. City focus is out of scope (no city
+entities yet, per the water-bodies-era decision to defer cities). Trigger is
+deliberately scoped to search selection only for this first pass: a plain
+(non-additive) click on a search result now flies the camera to frame that
+entity; direct map clicks still only select, unchanged, since flying on every
+map click would fight with the existing ctrl/cmd multi-select feature.
+Needed no new animation system -- reused the camera's existing
+target/`lerpCamera` easing loop that wheel-zoom already drives.
+
+### Changes
+
+**`camera.ts`**
+- New `focusOnBounds(bounds, screenWidth, screenHeight, baseScaleX, baseScaleY,
+  maxZoom, padding = 0.8)` -- computes the `Camera` (x/y/zoom) needed to
+  center and fit a world-space `WorldBounds` in the viewport with padding,
+  reusing `clampCamera` to keep the result within `[MIN_ZOOM, maxZoom]` and
+  on-screen. Takes `WorldBounds` (the same space `render.ts`'s `project()`
+  outputs), not raw lon/lat, so `camera.ts` stays free of a `render.ts`
+  dependency -- callers project an entity's lon/lat `boundingBox` into world
+  space first. New `MIN_BOUNDS_SPAN` constant guards a near-zero-size bbox
+  (a point-like entity) from producing `Infinity`/`NaN` zoom.
+
+**`interactionStore.ts`**
+- New decoupled focus-request channel -- `onFocusRequest(listener)` /
+  `requestFocus(id)` -- separate from the existing `subscribe`/`emit` used
+  for selection/hover state. A focus request isn't a state change, so it
+  deliberately doesn't fire unrelated subscribers like `drawHighlights`;
+  keeps "fly the camera to X" decoupled from selection so a future
+  click-to-focus feature (or multi-select) doesn't inherit fly behavior by
+  accident.
+
+**`SearchBox.tsx`**
+- `selectResult` now calls `interactionStore.requestFocus(entity.id)` right
+  after `toggleEntity`, only on a plain (non-additive) click. Ctrl/cmd+click
+  deliberately does not trigger focus -- with more than one result
+  ctrl+clicked in a row there's no single unambiguous entity to frame.
+
+**`MapCanvas.tsx`**
+- New `interactionStore.onFocusRequest` handler registered next to the
+  existing `interactionStore.subscribe(drawHighlights)` call: looks the
+  entity up via the existing local `findById`, projects its lon/lat
+  `boundingBox` into world space via `project()` (with the lat inversion --
+  `project()`'s `y = (90 - lat) / 180 * WORLD_HEIGHT`, so `minLat` maps to
+  the world-space `maxY` and vice versa), calls `focusOnBounds`, and sets
+  `target`. Only `target` is set -- the ticker's existing `lerpCamera` call
+  (`applyCameraTransform`) eases `current` toward it every frame, exactly
+  like wheel-zoom already does, so the fly animation needed zero new
+  per-frame logic. `unsubscribeFocus` hoisted alongside the existing
+  `unsubscribeInteraction` and called in the same cleanup.
+
+### Decisions
+- **Reused the existing target/`lerpCamera` easing loop instead of a new
+  tween system** -- wheel-zoom already established "mutate `target`, let the
+  ticker ease `current` toward it" as the pattern; a fly-to is just another
+  way to compute a new `target`.
+- **Search-only trigger for this pass** -- plain map clicks intentionally
+  don't fly the camera, to avoid fighting ctrl/cmd multi-select; can be
+  extended to click-to-focus later without touching this plumbing.
+- **Decoupled focus-request channel, not reusing `selectedEntityIds`
+  change** -- keeps "fly to X" independent of selection state, so selecting
+  without flying (e.g. future multi-select flows) stays possible.
+
+### Deferred / not yet implemented
+- No fly-to on direct map click, only search selection.
+- No fly-to on ctrl/cmd multi-select from search (ambiguous target).
+- Antimeridian-crossing entities (Russia, Fiji) still have the pre-existing
+  `computeBoundingBox` gap (no antimeridian handling) -- fly-to will
+  zoom out further than ideal for those specifically. Not introduced by this
+  change; was already documented in `entities.ts` as deferred to Phase 5.
+- City focus (Focus City) -- no city entities yet.
+
+---
+
 ## 2026-08-12 — Rivers gated behind VITE_SHOW_RIVERS (follow-up)
 
 ### Summary
