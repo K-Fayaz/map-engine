@@ -13,7 +13,6 @@ import {
   buildSeaEntities,
   buildLabelEntities,
   findEntityAt,
-  findRiverAt,
   type Entity,
 } from "./entities";
 import {
@@ -52,9 +51,10 @@ const SHOW_LABELS = import.meta.env.VITE_SHOW_LABELS === "true";
 
 // Same gating pattern as SHOW_LABELS above, off by default per user
 // request. Only gates the visible line rendering -- riverEntities are
-// still built and fed into interactionStore/hitTestScreenPoint regardless,
-// so rivers stay selectable via click and search even with this off (see
-// riversLayer below and findRiverAt's call site).
+// still built and fed into interactionStore regardless, so rivers stay
+// selectable via search even with this off (see riversLayer below). Rivers
+// are deliberately excluded from hitTestScreenPoint (see its comment), so
+// this flag has no effect on click/hover either way.
 const SHOW_RIVERS = import.meta.env.VITE_SHOW_RIVERS === "true";
 
 const OCEAN_COLOR = 0x068494;
@@ -123,15 +123,6 @@ const STATE_ZOOM_THRESHOLD = 6;
 // drag (pan), not a click -- Phase 2's drag handling never needed to make
 // this distinction since it had nothing else pointer events could mean.
 const CLICK_MOVE_THRESHOLD_PX = 4;
-
-// Rivers have no interior to hit-test against (open paths, not closed
-// rings, unlike every other selectable entity) -- clicking within this many
-// screen pixels of any segment counts as a hit. Kept as a constant pixel
-// count, not a fixed lon/lat tolerance, so the click target stays a
-// reasonable, constant size on screen regardless of zoom -- converted to
-// degrees at hit-test time (see hitTestScreenPoint) since that's the unit
-// pointNearLine actually needs.
-const RIVER_HIT_TOLERANCE_PX = 6;
 
 // Selection reads as stronger than hover: hover is a stroke-only outline
 // (see drawHighlights), selection additionally gets a translucent fill tint,
@@ -505,24 +496,21 @@ export function MapCanvas() {
             // measured adding real extra long-task time during zoom (see
             // changelog) on top of the LOD fill rebuild's own cost --
             // strokeGeometry's pixelLine needs no tessellation, so it stays
-            // cheap regardless of how often hover changes. Rivers have no
-            // fill option in the first place (see the selection branch
-            // above), so strokeLine is the only real choice there too.
-            // Seas are deliberately excluded from hover feedback -- unlike
-            // every other entity type, a sea's real polygon boundary is
-            // often huge and antimeridian-spanning (e.g. the Pacific), so
-            // stroking it on hover draws a distracting border across most of
-            // the map instead of a small, readable outline. Still fully
-            // selectable/highlightable via search (see SearchBox.tsx's
-            // requestFocus) and via a direct click (selectionGraphic above,
-            // unaffected by this) -- only the passive hover stroke is
-            // suppressed.
+            // cheap regardless of how often hover changes. No LineString
+            // branch needed here (unlike the selection branch above) --
+            // rivers are the only LineString entity type and
+            // hitTestScreenPoint deliberately never resolves to one, so
+            // `hovered` can never be a river.
+            // Seas are deliberately excluded from hover feedback -- a sea's
+            // real polygon boundary is often huge and antimeridian-spanning
+            // (e.g. the Pacific), so stroking it on hover draws a
+            // distracting border across most of the map instead of a small,
+            // readable outline. Still fully selectable/highlightable via
+            // search (see SearchBox.tsx's requestFocus) and via a direct
+            // click (selectionGraphic above, unaffected by this) -- only the
+            // passive hover stroke is suppressed.
             if (hovered && hovered.type !== "sea") {
-              if (hovered.geometry.type === "LineString" || hovered.geometry.type === "MultiLineString") {
-                strokeLine(hoverGraphic, hovered.geometry, HOVER_COLOR);
-              } else {
-                strokeGeometry(hoverGraphic, hovered.geometry as AreaGeometry, HOVER_COLOR);
-              }
+              strokeGeometry(hoverGraphic, hovered.geometry as AreaGeometry, HOVER_COLOR);
             }
           }
         }
@@ -644,28 +632,29 @@ export function MapCanvas() {
         // currently active for interaction -- states once zoomed in past
         // STATE_ZOOM_THRESHOLD, countries otherwise. Same threshold
         // declutterLabels uses for the same "which layer is live" question.
-        // Lakes, then rivers, are checked first, regardless of zoom: they
-        // paint on top of both layers (see lakesLayer/riversLayer above), so
-        // a click inside/near one should resolve to it, matching what's
-        // actually visible, the same "hit-test priority follows paint order"
-        // reasoning already applied to India's re-added-on-top container
-        // elsewhere in this file. Seas are checked *last*, as a fallback --
-        // they have no visible layer at all (see seaEntities above), so
-        // there's no "paints on top" to match; a click only ever falls
-        // through to a sea when it lands on open water, missing every land
-        // feature entirely.
+        // Lakes are checked first, regardless of zoom: they paint on top of
+        // both layers (see lakesLayer above), so a click inside/near one
+        // should resolve to it, matching what's actually visible, the same
+        // "hit-test priority follows paint order" reasoning already applied
+        // to India's re-added-on-top container elsewhere in this file. Seas
+        // are checked *last*, as a fallback -- they have no visible layer at
+        // all (see seaEntities above), so there's no "paints on top" to
+        // match; a click only ever falls through to a sea when it lands on
+        // open water, missing every land feature entirely.
+        //
+        // Rivers are deliberately excluded here -- their hit-test tolerance
+        // made them easy to hover/click by accident while aiming at
+        // something else nearby (a country border, a lake edge), getting in
+        // the way of selecting the thing actually intended. A click/hover
+        // near a river now just falls through to whatever's underneath
+        // (land, or a sea fallback). Rivers stay fully selectable via search
+        // (SearchBox.tsx calls interactionStore.toggleEntity/requestFocus
+        // directly by id, bypassing this function entirely).
         function hitTestScreenPoint(screenX: number, screenY: number): Entity | undefined {
           const [wx, wy] = screenToWorld(current, screenX, screenY, baseScaleX, baseScaleY);
           const [lon, lat] = unproject(wx, wy);
           const lakeHit = findEntityAt(lakeEntities, lon, lat);
           if (lakeHit) return lakeHit;
-          // Converts the constant on-screen pixel tolerance to lon/lat
-          // degrees at the current zoom -- see RIVER_HIT_TOLERANCE_PX's
-          // comment for why this can't just be a fixed degree value.
-          const riverToleranceDegrees =
-            (RIVER_HIT_TOLERANCE_PX * 360) / (WORLD_WIDTH * baseScaleX * current.zoom);
-          const riverHit = findRiverAt(riverEntities, lon, lat, riverToleranceDegrees);
-          if (riverHit) return riverHit;
           const candidates = current.zoom > STATE_ZOOM_THRESHOLD ? stateEntities : borderEntities;
           const landHit = findEntityAt(candidates, lon, lat);
           if (landHit) return landHit;
