@@ -5,6 +5,52 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-13 — Rivers excluded from hit-testing (search-only selection)
+
+### Summary
+Second same-day follow-up. User-reported: rivers' hit-test tolerance
+(`RIVER_HIT_TOLERANCE_PX`, needed since a river has no interior to test
+against) made them easy to hover or click by accident while aiming at
+something else nearby -- a country border, a lake edge -- getting in the way
+of selecting the thing actually intended. Unlike the sea hover fix directly
+above, the user explicitly wanted both hover *and* click blocked for rivers,
+not just hover, with search remaining as the only way to select one.
+
+### Changes
+
+**`MapCanvas.tsx`**
+- `hitTestScreenPoint()` no longer checks rivers at all -- the `findRiverAt`
+  call and its `riverToleranceDegrees` conversion were removed from the
+  function entirely, rather than filtering the result afterward. A
+  click/hover near a river now just falls through to whatever's underneath
+  (land, or the sea fallback), exactly the same "falls through when nothing
+  else is there" pattern seas already used for click.
+- Because `hitTestScreenPoint` can now never resolve to a river,
+  `drawHighlights()`'s hover branch no longer needs a river type-check or a
+  LineString-vs-AreaGeometry branch at all (rivers were the only LineString
+  entity type) -- simplified back to an unconditional `strokeGeometry` call,
+  guarded only by the pre-existing sea exclusion.
+- Removed the now-unused `findRiverAt` import and `RIVER_HIT_TOLERANCE_PX`
+  constant (both were only ever referenced from the removed hit-test branch).
+  `SHOW_RIVERS`'s comment updated to note it no longer has any bearing on
+  click/hover, only on the visible line layer.
+
+### Decisions
+- **Excluded at the single hit-testing choke point, not filtered per-caller**
+  -- `hitTestScreenPoint` already drives both `onPointerMove` (hover) and
+  `onPointerUp` (click), so removing the river branch there fixes both at
+  once and cleanly, instead of adding a type-check in two separate places
+  (as the sea fix above did deliberately, for a narrower hover-only scope).
+- **Full exclusion, not hover-only like seas** -- confirmed explicitly with
+  the user this time: unlike seas (still click-selectable, only hover was
+  noisy), rivers' hit-test tolerance was actively interfering with selecting
+  other nearby entities, so click needed to go too. Search remains fully
+  unaffected either way -- `SearchBox.tsx` calls
+  `interactionStore.toggleEntity`/`requestFocus` directly by id, never
+  through `hitTestScreenPoint`.
+
+---
+
 ## 2026-08-13 — Sea/ocean hover highlight suppressed (follow-up)
 
 ### Summary
