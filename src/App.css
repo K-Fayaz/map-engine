@@ -7,3 +7,54 @@ body,
   height: 100%;
   overflow: hidden;
 }
+
+.editor-layout {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  grid-template-rows: 1fr 220px;
+  /* Instruction Builder spans both rows -- full right-column height, per
+     roadmap.md section 1 / the reference mockup -- not just the row next to
+     the timeline. Map + Timeline occupy the left column only. */
+  grid-template-areas:
+    "map builder"
+    "timeline builder";
+  width: 100%;
+  height: 100%;
+}
+
+.editor-map {
+  grid-area: map;
+  position: relative;
+  overflow: hidden;
+}
+
+.editor-timeline {
+  grid-area: timeline;
+  border-top: 1px solid #ccc;
+  overflow: auto;
+}
+
+.editor-instruction-builder {
+  grid-area: builder;
+  border-left: 1px solid #ccc;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The mockup splits the panel into two stacked zones: animation/parameter
+   selection on top, the actual input controls below. Placeholder content
+   for now -- real fields land in later 6.1 steps. */
+.editor-instruction-builder .zone {
+  padding: 12px;
+  box-sizing: border-box;
+}
+
+.editor-instruction-builder .zone-animation {
+  flex: 1 1 55%;
+  border-bottom: 1px solid #ccc;
+}
+
+.editor-instruction-builder .zone-input {
+  flex: 1 1 45%;
+}

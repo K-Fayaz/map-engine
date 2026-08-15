@@ -212,12 +212,36 @@ export function MapCanvas() {
         // walk at the root before it recurses into any children.
         app.stage.eventMode = "none";
 
-        // Base per-axis stretch so the world exactly fills the screen at
-        // zoom = 1 -- matches the original non-uniform "always fills the
-        // window" behavior. Camera x/y/zoom then layers a uniform pan/zoom
-        // transform on top, recomputed on resize.
-        let baseScaleX = app.screen.width / WORLD_WIDTH;
-        let baseScaleY = app.screen.height / WORLD_HEIGHT;
+        // Uniform contain-fit so the world keeps its aspect ratio instead of
+        // stretching to the container's -- matters a lot once the map is no
+        // longer the whole window (Phase 6's editor layout gives it a
+        // non-2:1 area). baseScaleX/baseScaleY stay separate params
+        // throughout camera.ts/this file (unchanged call signatures) but are
+        // always set equal here. viewW/viewH is the resulting content size
+        // (<= the real canvas in one axis); letterboxX/letterboxY is the
+        // margin that centers it, applied only where world-space math
+        // crosses into real screen/DOM pixels: worldContainer's position
+        // (applyCameraTransform) and raw pointer coordinates
+        // (hitTestScreenPoint, onWheel). Every other camera.ts call already
+        // works in "content space" (0..viewW, 0..viewH) and needs no
+        // change -- clampCamera/zoomAt/etc. don't know or care that content
+        // space might be smaller than the actual canvas.
+        let baseScaleX = 0;
+        let baseScaleY = 0;
+        let viewW = 0;
+        let viewH = 0;
+        let letterboxX = 0;
+        let letterboxY = 0;
+        function applyViewFit(screenWidth: number, screenHeight: number) {
+          const scale = Math.min(screenWidth / WORLD_WIDTH, screenHeight / WORLD_HEIGHT);
+          baseScaleX = scale;
+          baseScaleY = scale;
+          viewW = WORLD_WIDTH * scale;
+          viewH = WORLD_HEIGHT * scale;
+          letterboxX = (screenWidth - viewW) / 2;
+          letterboxY = (screenHeight - viewH) / 2;
+        }
+        applyViewFit(app.screen.width, app.screen.height);
 
         // Country containers are built once, from 50m data, and persist for
         // the lifetime of the map -- both their identity (useful later for
@@ -608,7 +632,7 @@ export function MapCanvas() {
         // before the ticker has ever run) and every tick thereafter.
         function applyCameraTransform() {
           current = lerpCamera(current, target, EASE_FACTOR);
-          worldContainer.position.set(current.x, current.y);
+          worldContainer.position.set(current.x + letterboxX, current.y + letterboxY);
           worldContainer.scale.set(baseScaleX * current.zoom, baseScaleY * current.zoom);
           setVisibleAboveZoom(statesLayer, current.zoom, STATE_ZOOM_THRESHOLD);
           setVisibleAboveZoom(stateLabelsLayer, current.zoom, STATE_ZOOM_THRESHOLD);
@@ -620,10 +644,9 @@ export function MapCanvas() {
 
         const onResize = () => {
           const { width, height } = app.screen;
-          baseScaleX = width / WORLD_WIDTH;
-          baseScaleY = height / WORLD_HEIGHT;
-          current = clampCamera(current, width, height, MAX_ZOOM);
-          target = clampCamera(target, width, height, MAX_ZOOM);
+          applyViewFit(width, height);
+          current = clampCamera(current, viewW, viewH, MAX_ZOOM);
+          target = clampCamera(target, viewW, viewH, MAX_ZOOM);
           scheduleLabelDeclutter();
         };
         app.renderer.on("resize", onResize);
@@ -651,7 +674,17 @@ export function MapCanvas() {
         // (SearchBox.tsx calls interactionStore.toggleEntity/requestFocus
         // directly by id, bypassing this function entirely).
         function hitTestScreenPoint(screenX: number, screenY: number): Entity | undefined {
-          const [wx, wy] = screenToWorld(current, screenX, screenY, baseScaleX, baseScaleY);
+          // screenX/screenY are raw canvas-relative coordinates (e.g.
+          // e.offsetX/Y); letterboxX/Y converts into content space, since
+          // current/target camera math never knows about the letterbox
+          // margin (see applyViewFit above).
+          const [wx, wy] = screenToWorld(
+            current,
+            screenX - letterboxX,
+            screenY - letterboxY,
+            baseScaleX,
+            baseScaleY,
+          );
           const [lon, lat] = unproject(wx, wy);
           const lakeHit = findEntityAt(lakeEntities, lon, lat);
           if (lakeHit) return lakeHit;
@@ -704,15 +737,18 @@ export function MapCanvas() {
             movedPastClickThreshold = true;
           }
 
-          const { width, height } = app.screen;
+          // Drag delta (offsetX - dragStartX) is letterbox-invariant -- the
+          // constant margin cancels out in the subtraction -- so no
+          // letterboxX/Y adjustment is needed here, unlike the absolute
+          // cursor positions hitTestScreenPoint/onWheel use.
           const next = clampCamera(
             {
               x: dragStartCameraX + (e.offsetX - dragStartX),
               y: dragStartCameraY + (e.offsetY - dragStartY),
               zoom: current.zoom,
             },
-            width,
-            height,
+            viewW,
+            viewH,
             MAX_ZOOM,
           );
           current = next;
@@ -796,8 +832,7 @@ export function MapCanvas() {
           const isStates = current.zoom > STATE_ZOOM_THRESHOLD;
           const layer = isStates ? stateLabelsLayer : countryLabelsLayer;
           const allLabels = isStates ? stateLabelObjects : countryLabelObjects;
-          const { width, height } = app.screen;
-          const bounds = viewportWorldBounds(current, width, height, baseScaleX, baseScaleY);
+          const bounds = viewportWorldBounds(current, viewW, viewH, baseScaleX, baseScaleY);
           const scaleX = baseScaleX * current.zoom;
           const scaleY = baseScaleY * current.zoom;
 
@@ -848,8 +883,7 @@ export function MapCanvas() {
         // crosses back above threshold and this runs for real again.
         function declutterStates() {
           if (current.zoom <= STATE_ZOOM_THRESHOLD) return;
-          const { width, height } = app.screen;
-          const bounds = viewportWorldBounds(current, width, height, baseScaleX, baseScaleY);
+          const bounds = viewportWorldBounds(current, viewW, viewH, baseScaleX, baseScaleY);
           for (const item of stateRenderItems) {
             const onScreen =
               item.maxX >= bounds.minX &&
@@ -904,7 +938,6 @@ export function MapCanvas() {
         unsubscribeFocus = interactionStore.onFocusRequest((id) => {
           const entity = findById(id);
           if (!entity) return;
-          const { width, height } = app.screen;
           const bb = entity.boundingBox;
           // project()'s y is inverted (higher lat -> smaller y), so minLat
           // maps to the world-space maxY and maxLat maps to minY.
@@ -912,8 +945,8 @@ export function MapCanvas() {
           const [maxX, minY] = project(bb.maxLon, bb.maxLat);
           target = focusOnBounds(
             { minX, minY, maxX, maxY },
-            width,
-            height,
+            viewW,
+            viewH,
             baseScaleX,
             baseScaleY,
             MAX_ZOOM,
@@ -929,7 +962,6 @@ export function MapCanvas() {
         // that to be allowed.
         const onWheel = (e: WheelEvent) => {
           e.preventDefault();
-          const { width, height } = app.screen;
           const zoomFactor = Math.exp(-e.deltaY * WHEEL_ZOOM_SENSITIVITY);
           // Clamp the requested zoom *before* anchoring, not after: zoomAt
           // computes x/y assuming the camera ends up at exactly the zoom
@@ -942,8 +974,16 @@ export function MapCanvas() {
             MAX_ZOOM,
             Math.max(MIN_ZOOM, target.zoom * zoomFactor),
           );
-          const zoomed = zoomAt(target, e.offsetX, e.offsetY, requestedZoom);
-          target = clampCamera(zoomed, width, height, MAX_ZOOM);
+          // e.offsetX/Y are raw canvas-relative coordinates -- convert into
+          // content space before anchoring, same reasoning as
+          // hitTestScreenPoint above.
+          const zoomed = zoomAt(
+            target,
+            e.offsetX - letterboxX,
+            e.offsetY - letterboxY,
+            requestedZoom,
+          );
+          target = clampCamera(zoomed, viewW, viewH, MAX_ZOOM);
           scheduleLodCheck();
           scheduleLabelDeclutter();
         };
