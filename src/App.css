@@ -30,13 +30,15 @@ body,
 
 .editor-timeline {
   grid-area: timeline;
-  border-top: 1px solid #ccc;
+  background: #181a1f;
+  border-top: 1px solid #333;
   overflow: auto;
 }
 
 .editor-instruction-builder {
   grid-area: builder;
-  border-left: 1px solid #ccc;
+  background: #181a1f;
+  border-left: 1px solid #333;
   overflow: auto;
   display: flex;
   flex-direction: column;
@@ -52,7 +54,7 @@ body,
 
 .editor-instruction-builder .zone-animation {
   flex: 1 1 55%;
-  border-bottom: 1px solid #ccc;
+  border-bottom: 1px solid #333;
 }
 
 .editor-instruction-builder .zone-input {

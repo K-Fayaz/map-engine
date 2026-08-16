@@ -5,7 +5,7 @@ import { SearchBox } from "./map/SearchBox";
 const placeholderStyle: React.CSSProperties = {
   fontFamily: "sans-serif",
   fontSize: 13,
-  color: "#888",
+  color: "#9a9ea6",
   padding: 12,
 };
 
