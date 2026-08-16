@@ -2,20 +2,12 @@ import "./App.css";
 import { MapCanvas } from "./map/MapCanvas";
 import { SearchBox } from "./map/SearchBox";
 import { InstructionBuilder } from "./map/InstructionBuilder";
-
-const placeholderStyle: React.CSSProperties = {
-  fontFamily: "sans-serif",
-  fontSize: 13,
-  color: "#9a9ea6",
-  padding: 12,
-};
+import { Timeline } from "./map/Timeline";
 
 // Phase 6 editor shell (roadmap.md section 1): Map on top, Timeline and
-// Instruction Builder split across the bottom. Timeline/Instruction Builder
-// are placeholders for now -- their real content lands in later 6.1 steps
-// (entity picker, animation/duration fields, scene list). MapCanvas already
-// resizes to whatever container it's given (`resizeTo: container` in
-// MapCanvas.tsx), so shrinking its area here needs no changes there.
+// Instruction Builder split across the bottom. MapCanvas already resizes to
+// whatever container it's given (`resizeTo: container` in MapCanvas.tsx),
+// so shrinking its area here needs no changes there.
 function App() {
   return (
     <div className="editor-layout">
@@ -23,8 +15,8 @@ function App() {
         <MapCanvas />
         <SearchBox />
       </div>
-      <div className="editor-timeline" style={placeholderStyle}>
-        Timeline
+      <div className="editor-timeline">
+        <Timeline />
       </div>
       <div className="editor-instruction-builder">
         <InstructionBuilder />

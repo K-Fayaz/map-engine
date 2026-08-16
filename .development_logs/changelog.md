@@ -5,6 +5,129 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-16 — Phase 6, baby-phase 6.1.b: Scene model, sceneStore, timeline list
+
+### Summary
+Second pass of Phase 6, same day as 6.1.a. Adds the actual Scene data model,
+a `zustand`-backed `sceneStore`, "Add to Timeline" wiring in the Instruction
+Builder, and a minimal (unstyled, no drag/resize) scene list in the Timeline
+panel. Preceded by a design discussion on two specific points, both
+resolved before writing code: whether "Focus" and "Focus World" should stay
+two separate action types (merged into one, see Decisions), and what should
+happen to the form after a scene is added (chose: reset entity only, keep
+animation/duration -- matches the roadmap's own repeated-pattern demo).
+Verified end-to-end with the roadmap's own demo sequence (India, Pakistan,
+China, all "Pan + Highlight", 3s) -- three rows landed in order with correct
+entity/action/duration, and the map reflected the last add's pan+highlight.
+
+### Changes
+
+**`scenes.ts` (new)**
+- `Scene`/`SceneAction`/`CameraAction` types, matching roadmap.md section
+  14's shape (`id`, `duration`, `targetEntityId?`, `actions`, `camera?`) --
+  but `SceneAction`/`CameraAction` themselves are a generic `{ type,
+  params }` pair rather than the roadmap's illustrative per-action custom
+  fields (its example puts `entityId` directly on a highlight action).
+  Deliberate, per `plan-phase6-scenes-timeline.md`'s decision #6: the
+  future playback engine (6.1.c) needs to dispatch on `type` through one
+  registry, and a uniform shape is what lets `actions` and `camera` share
+  that one dispatcher instead of needing two different mechanisms. `type`
+  is a plain `string`, not a literal union -- a new action type later is a
+  new registered handler, not an edit to this file.
+- `AnimationValue`/`ANIMATION_OPTIONS`: the V1 dropdown vocabulary, now
+  living here (not `InstructionBuilder.tsx`) so it can't drift from the
+  mapping logic that interprets it. Four options, not five -- see Decisions
+  for the Focus/Focus World merge.
+- `animationRequiresEntity(animation)`: only `"pan"` can go without an
+  entity (pans out to the world); every other V1 animation needs one.
+  Exported so the Instruction Builder can disable "Add to Timeline"
+  synchronously, without calling `buildScene` just to learn it'd return
+  null.
+- `buildScene(entity, animation, duration)`: pure mapping from the form's
+  flat state into a `Scene`. The one place that knows how each dropdown
+  option decomposes -- "Pan + Highlight" becomes *two* things in the Scene
+  (a `camera` pan entry and an `actions` highlight entry), not one opaque
+  combined action, so 6.1.c's dispatcher never needs to know "combined"
+  options exist at all. Returns `null` if a required entity is missing (a
+  correctness backstop; the primary validation is
+  `animationRequiresEntity` at the call site).
+- `describeAnimation(scene)`: the reverse mapping, for display. Reconstructs
+  a label ("Pan + Highlight", etc.) from a Scene's actual `actions`/`camera`
+  rather than storing the original `AnimationValue` on the Scene -- keeps
+  the Scene describing what happens (roadmap.md section 14: "store what the
+  user wants to happen, not raw renderer state"), not which dropdown option
+  produced it.
+
+**`sceneStore.ts` (new)**
+- `useSceneStore` (zustand): `scenes: Scene[]` + `addScene`. A separate
+  store from `interactionStore.ts`'s hand-rolled pub/sub, not an extension
+  of it -- per decision #7, scoped to this new feature only,
+  `interactionStore` itself untouched so nothing about Phase 1-5 risks
+  regressing.
+
+**`InstructionBuilder.tsx`**
+- Imports `ANIMATION_OPTIONS`/`AnimationValue` from `scenes.ts` instead of
+  defining its own local copy (which still had the old 5-option
+  Focus/Focus World vocabulary).
+- New "Add to Timeline" button: disabled via `animationRequiresEntity`
+  until a valid combination exists, calls `buildScene` + `addScene` on
+  click. After adding: entity resets to empty, animation and duration
+  persist -- see Decisions.
+- Entity field's placeholder hints "(leave empty to pan to world)"
+  specifically when "Pan" is selected, addressing the one real UX cost of
+  merging Focus/Focus World (an empty field silently meaning "the world" is
+  not otherwise self-evident).
+
+**`Timeline.tsx` (new) / `Timeline.css` (new)**
+- Renders `sceneStore`'s `scenes` as a plain row-per-scene list (flex-wrap,
+  not yet a real duration-proportional track -- that's 6.2), each row
+  showing the resolved entity name (looked up from `interactionStore`'s
+  `entities` by `scene.targetEntityId`, "World" if unset), `describeAnimation`,
+  and duration. Empty state ("No scenes yet...") when `scenes.length === 0`.
+- Wired into `App.tsx`'s `editor-timeline` div, replacing the placeholder
+  text used since 6.1.a; `App.tsx`'s now-unused `placeholderStyle` constant
+  removed along with it (Timeline was its last consumer).
+
+### Decisions
+- **"Focus" and "Focus World" merged into one `"pan"` action with an
+  optional target**, not two separate action types -- discussed explicitly
+  this session. `camera.ts`'s `focusOnBounds` already takes bounds as one
+  argument regardless of whether they came from an entity or the whole
+  world; two registry entries wrapping the identical mechanism would be
+  redundant. Also matches how roadmap.md sections 10-12 describe the camera
+  conceptually (one "find target's bounds, default world" pipeline, not two
+  separate ones) more closely than the section 4's literal two-name list
+  does. This is a deliberate, logged deviation from roadmap.md's naming --
+  "Pan + Highlight" replaces "Focus + Highlight" throughout the UI and the
+  action vocabulary.
+- **Post-add form reset: entity only, not animation/duration.** Discussed
+  three options (full reset / entity-only reset / no reset). Chose
+  entity-only because it matches the one concrete workflow roadmap.md's own
+  demo describes (section 2 -- repeating the same Focus+Highlight/3s pattern
+  for Pakistan, China, Russia in a row): pick the next entity, hit Add
+  again, same style carries over, only change animation/duration when you
+  actually want something different.
+- **Hardcoding `ANIMATION_OPTIONS`' fixed option list does not conflict with
+  "stay extensible."** Reaffirmed from the 6.1.a discussion: the
+  extensibility constraint targets the Scene data model and playback
+  dispatcher (both of which now exist, and both do use the generic `{type,
+  params}` + registry-ready shape), not the UI's fixed vocabulary of
+  current options.
+
+### Deferred / not yet implemented
+- Action registry + actual Play/Pause execution (6.1.c) -- scenes currently
+  just sit in the list, nothing plays them back yet.
+- Visual timeline (duration-proportional blocks, drag-resize, delete,
+  reorder) -- 6.2. Today's list is flex-wrapped rows in add-order only.
+- "Clear Highlight"'s semantics (specific entity vs. clear-all) were left
+  as "specific entity" (matches `buildScene`'s current mapping,
+  `{type:"clearHighlight", params:{entityId}}`) -- not revisited this pass,
+  flagged in the 6.1.a discussion as still open.
+- No `Scene.id` collision handling beyond `crypto.randomUUID()`'s own
+  guarantees (not a concern in practice, not explicitly tested).
+
+---
+
 ## 2026-08-16 — Phase 6, baby-phase 6.1.a: Instruction Builder shell
 
 ### Summary

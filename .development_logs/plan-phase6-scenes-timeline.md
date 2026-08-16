@@ -110,15 +110,21 @@ doesn't get tangled up with a bug in playback.
   and a map contain-fit change (MapCanvas.tsx, stretch → letterboxed
   contain) — both prerequisites the form needed a sane home to live in, see
   changelog.md for the full writeup including the Phase 2 decision reversal.
-- [ ] **6.1.b — Scene model + sceneStore + minimal scene list.** `Scene`/
-  `SceneAction` types (`actions: {type, params}[]`, per decision #6 above —
-  array from day one even though only 1-2 actions ever populate it in V1).
-  New state-library-backed `sceneStore` (decision #7 — new dependency,
-  `interactionStore` untouched). "Add to Timeline" pushes a scene built from
-  the form's current state. Rendered as a plain unstyled list for now — no
-  drag, no resize, no visual timeline blocks (that's 6.2).
+- [x] **6.1.b — Scene model + sceneStore + minimal scene list.** ✅ done
+  (2026-08-16, see changelog.md). `Scene`/`SceneAction` types (`actions:
+  {type, params}[]`, per decision #6 above — array from day one even though
+  only 1-2 actions ever populate it in V1). New state-library-backed
+  `sceneStore` (decision #7 — new dependency, `interactionStore`
+  untouched). "Add to Timeline" pushes a scene built from the form's
+  current state. Rendered as a plain unstyled list for now — no drag, no
+  resize, no visual timeline blocks (that's 6.2).
   *Demo:* add India, Pakistan, China via the form; three rows appear in
-  order with correct entity/action/duration.
+  order with correct entity/action/duration. ✅ verified in-browser with
+  this exact sequence.
+  Also decided this step, beyond its original scope: "Focus"/"Focus World"
+  merged into one optional-entity `"pan"` action (see changelog.md) —
+  `ANIMATION_OPTIONS` is now 4 options, not 5, and "Pan + Highlight"
+  replaces "Focus + Highlight" throughout.
 - [ ] **6.1.c — Basic sequential Play/Pause.** Small action-registry
   dispatcher (decision #6 — lookup table keyed by `action.type`, not an
   if/else chain) with handlers for the 5 V1 actions. Play/Pause buttons walk

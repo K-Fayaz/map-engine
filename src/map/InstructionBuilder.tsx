@@ -2,18 +2,8 @@ import { useMemo, useState } from "react";
 import "./InstructionBuilder.css";
 import { interactionStore, useInteractionStore } from "./interactionStore";
 import type { Entity } from "./entities";
-
-// The V1 animation vocabulary (roadmap.md Phase 6, section 4) -- deliberately
-// small and hardcoded, not data-driven. `value` doubles as the future
-// action-registry key (plan-phase6-scenes-timeline.md decision #6) once
-// scenes/playback wire this dropdown up for real; for now it's inert.
-const ANIMATION_OPTIONS = [
-  { value: "focus", label: "Focus" },
-  { value: "focusWorld", label: "Focus World" },
-  { value: "highlight", label: "Highlight" },
-  { value: "clearHighlight", label: "Clear Highlight" },
-  { value: "focusHighlight", label: "Focus + Highlight" },
-] as const;
+import { ANIMATION_OPTIONS, animationRequiresEntity, buildScene, type AnimationValue } from "./scenes";
+import { useSceneStore } from "./sceneStore";
 
 // Right-panel Instruction Builder (roadmap.md Phase 6, section 3). Unlike
 // SearchBox.tsx, this entity picker deliberately does NOT require clicking
@@ -24,15 +14,30 @@ const ANIMATION_OPTIONS = [
 // preview is the next 6.1 step, not yet done.
 export function InstructionBuilder() {
   const { entities } = useInteractionStore();
+  const addScene = useSceneStore((state) => state.addScene);
   const [query, setQuery] = useState("");
   const [selectedEntity, setSelectedEntity] = useState<Entity | null>(null);
-  const [animation, setAnimation] = useState<(typeof ANIMATION_OPTIONS)[number]["value"]>(
-    ANIMATION_OPTIONS[0].value,
-  );
-  // Seconds. Plain local state for now -- becomes part of the Scene created
-  // by "Add to Timeline" once the Scene model lands (6.1.b), not wired to
-  // anything yet.
+  const [animation, setAnimation] = useState<AnimationValue>(ANIMATION_OPTIONS[0].value);
+  // Seconds. Plain local state, becomes part of the Scene "Add to Timeline"
+  // creates below.
   const [duration, setDuration] = useState(3);
+
+  // Only "Pan" can go without an entity (pans out to the world) -- every
+  // other animation needs one picked before a Scene can be built.
+  const canAdd = !animationRequiresEntity(animation) || selectedEntity !== null;
+
+  // Discussed and chosen over a full reset or no reset at all: only the
+  // entity clears after adding, animation/duration carry over. Matches the
+  // one concrete workflow roadmap.md's own demo describes (section 2) --
+  // repeating the same Focus+Highlight/3s pattern for Pakistan, China,
+  // Russia in a row -- so the common case doesn't need re-picking
+  // animation/duration for every single entity.
+  const addToTimeline = () => {
+    const scene = buildScene(selectedEntity, animation, duration);
+    if (!scene) return;
+    addScene(scene);
+    setSelectedEntity(null);
+  };
 
   // Same substring search interactionStore already exposes for SearchBox --
   // no new search logic, just a new place (a form field, not a floating
@@ -84,7 +89,11 @@ export function InstructionBuilder() {
         ) : (
           <input
             type="text"
-            placeholder="Search countries, states..."
+            placeholder={
+              animation === "pan"
+                ? "Search countries, states... (leave empty to pan to world)"
+                : "Search countries, states..."
+            }
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             className="ib-input"
@@ -116,6 +125,9 @@ export function InstructionBuilder() {
           className="ib-input"
         />
       </div>
+      <button className="ib-add-btn" disabled={!canAdd} onClick={addToTimeline}>
+        Add to Timeline
+      </button>
     </div>
   );
 }
