@@ -41,13 +41,24 @@ export interface Scene {
 // would just be redundant. This is a deliberate naming/shape deviation from
 // roadmap.md section 4's literal "Focus"/"Focus World" -- logged here and
 // in plan-phase6-scenes-timeline.md rather than left as silent drift.
-export type AnimationValue = "pan" | "highlight" | "clearHighlight" | "panHighlight";
+//
+// "Highlight" and "Pan + Highlight" were later merged too (6.1.c
+// follow-up): a highlighted entity the camera isn't actually showing is
+// useless in a V1 flat form with no other way to guarantee it's in frame,
+// so "Highlight" now always pans to the entity as well -- buildScene below
+// attaches a camera.pan unconditionally. The camera-only, no-highlight case
+// stays reachable via the separate "pan" option (e.g. establishing shots,
+// or panning to the whole world). Deliberately not preserving a
+// highlight-without-pan option -- per docs/phase_6_arch.md's "don't
+// over-solve," that's a more advanced scripting use case (multiple
+// highlights within one already-framed shot) worth building only if real
+// use actually asks for it.
+export type AnimationValue = "pan" | "highlight" | "clearHighlight";
 
 export const ANIMATION_OPTIONS: { value: AnimationValue; label: string }[] = [
   { value: "pan", label: "Pan" },
   { value: "highlight", label: "Highlight" },
   { value: "clearHighlight", label: "Clear Highlight" },
-  { value: "panHighlight", label: "Pan + Highlight" },
 ];
 
 // Every V1 animation except a target-less "Pan" (pans out to the world)
@@ -60,11 +71,11 @@ export function animationRequiresEntity(animation: AnimationValue): boolean {
 
 // Pure mapping from the Instruction Builder's flat form state (one entity,
 // one animation, one duration) into a Scene -- the one place that knows how
-// each dropdown option decomposes into `camera`/`actions`. "Pan + Highlight"
-// in particular becomes *two* things in the Scene (a camera.pan and an
-// actions highlight entry), not one opaque combined action, so 6.1.c's
-// registry dispatcher never needs to know "combined" options exist at all --
-// it only ever sees plain pan/highlight/clearHighlight entries.
+// each dropdown option decomposes into `camera`/`actions`. "Highlight"
+// becomes *two* things in the Scene (a camera.pan and an actions highlight
+// entry), not one opaque combined action, so 6.1.c's registry dispatcher
+// never needs to know a "combined" option exists at all -- it only ever
+// sees plain pan/highlight/clearHighlight entries.
 // Returns null if `animation` requires an entity and none was given --
 // callers (the "Add to Timeline" button) should already be preventing this
 // via animationRequiresEntity, this is a correctness backstop, not the
@@ -79,10 +90,10 @@ export function buildScene(
   const actions: SceneAction[] = [];
   let camera: CameraAction | undefined;
 
-  if (animation === "pan" || animation === "panHighlight") {
+  if (animation === "pan" || animation === "highlight") {
     camera = { type: "pan", params: entity ? { targetEntityId: entity.id } : {} };
   }
-  if (animation === "highlight" || animation === "panHighlight") {
+  if (animation === "highlight") {
     actions.push({ type: "highlight", params: { entityId: entity!.id } });
   }
   if (animation === "clearHighlight") {
@@ -107,9 +118,11 @@ export function buildScene(
 export function describeAnimation(scene: Scene): string {
   const hasPan = scene.camera?.type === "pan";
   const hasHighlight = scene.actions.some((action) => action.type === "highlight");
-  if (hasPan && hasHighlight) return "Pan + Highlight";
-  if (hasPan) return "Pan";
+  // "highlight" always attaches a camera.pan now (see buildScene), so
+  // hasPan && hasHighlight is just "Highlight" -- there's no longer a
+  // distinct "Pan + Highlight" option it could mean instead.
   if (hasHighlight) return "Highlight";
+  if (hasPan) return "Pan";
   if (scene.actions.some((action) => action.type === "clearHighlight")) return "Clear Highlight";
   return "—";
 }

@@ -5,6 +5,60 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-16 — Phase 6 follow-up: "Highlight" merged with "Pan + Highlight"
+
+### Summary
+Same-day follow-up to 6.1.c, user-prompted design question rather than a
+scoped baby-phase step: with "Highlight" and "Pan + Highlight" as two
+separate options, picking plain "Highlight" could highlight an entity the
+camera wasn't actually showing -- useless in a V1 flat form with no other
+way to guarantee the target is in frame. Discussed and agreed: "Highlight"
+should always pan too, collapsing the vocabulary from 4 animation options
+to 3. Verified in-browser -- from a camera panned to China, playing back a
+"Highlight" scene targeting Sri Lanka flew the camera back and highlighted
+it, driven entirely by the Scene's own `camera.pan` action (not the
+still-reverted live-preview quirk from the entry above).
+
+### Changes
+
+**`scenes.ts`**
+- `AnimationValue` narrowed from `"pan" | "highlight" | "clearHighlight" |
+  "panHighlight"` to `"pan" | "highlight" | "clearHighlight"` --
+  `"panHighlight"` removed entirely, not deprecated/aliased.
+- `ANIMATION_OPTIONS` dropped its "Pan + Highlight" entry -- 3 options now,
+  not 4.
+- `buildScene`: the `"highlight"` branch now unconditionally attaches a
+  `camera: {type: "pan", params: {targetEntityId: entity.id}}` alongside
+  the highlight action (previously only `"panHighlight"` did this,
+  `"highlight"` attached no camera at all).
+- `describeAnimation`: `hasHighlight` alone now returns `"Highlight"`
+  (previously needed `hasPan && hasHighlight` to distinguish it from a
+  highlight-only scene, which can no longer exist).
+
+### Decisions
+- **No highlight-without-pan option preserved.** The tradeoff (sequencing
+  several highlights within one already-framed shot without the camera
+  re-fitting tighter on each) was discussed explicitly and accepted as a
+  real but more advanced scripting use case, deliberately not built ahead
+  of real demand -- per `docs/phase_6_arch.md`'s "don't over-solve"
+  principle. If this comes up in practice, it's the kind of concrete use
+  case the architecture doc says should drive the next decision, not
+  something to speculatively support now.
+- **`"panHighlight"` removed, not kept as a deprecated alias.** No
+  persisted Scene data exists yet (nothing is saved/loaded across
+  sessions), so there was nothing to migrate -- a clean rename rather than
+  carrying dead vocabulary forward.
+
+### Deferred / not yet implemented
+- The live-preview animation-mismatch bug from the entry above is still
+  unfixed/reverted -- now additionally means picking an entity for *any*
+  animation (including plain "Pan", "Clear Highlight") still previews with
+  both pan and highlight in `InstructionBuilder.tsx`, regardless of the
+  merge here. Same fix (route the preview through `buildScene`/
+  `dispatchScene`) still applies whenever that's revisited.
+
+---
+
 ## 2026-08-16 — Phase 6, baby-phase 6.1.c: Action registry, sequential Play/Pause
 
 ### Summary
