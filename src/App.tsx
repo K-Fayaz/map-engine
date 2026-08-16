@@ -1,6 +1,7 @@
 import "./App.css";
 import { MapCanvas } from "./map/MapCanvas";
 import { SearchBox } from "./map/SearchBox";
+import { InstructionBuilder } from "./map/InstructionBuilder";
 
 const placeholderStyle: React.CSSProperties = {
   fontFamily: "sans-serif",
@@ -26,12 +27,7 @@ function App() {
         Timeline
       </div>
       <div className="editor-instruction-builder">
-        <div className="zone zone-animation" style={placeholderStyle}>
-          Animation / parameters
-        </div>
-        <div className="zone zone-input" style={placeholderStyle}>
-          Entity / duration input
-        </div>
+        <InstructionBuilder />
       </div>
     </div>
   );
