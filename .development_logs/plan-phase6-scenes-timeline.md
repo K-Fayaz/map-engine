@@ -92,18 +92,24 @@ Three sub-steps, each demoable on its own before the next is built —
 deliberately not built as one combined slice, so a bug in (say) the form
 doesn't get tangled up with a bug in playback.
 
-- [ ] **6.1.a — Instruction Builder form + live map preview.** Right-panel
-  form: entity dropdown (reuses `interactionStore.search`'s existing
-  substring match, no new search logic — just a new place to render it),
-  animation dropdown hardcoded to the 5 V1 actions (Focus, Focus World,
-  Highlight, Clear Highlight, Focus + Highlight — roadmap.md section 4),
-  duration input. Picking an entity fires the existing
-  `requestFocus`/`toggleEntity` calls (Phase 5) so the map flies/highlights
-  live. No "Add to Timeline" wiring yet, no store yet — this step only
-  validates "map stays clean, form drives map" (docs/phase_6_arch.md) in
-  isolation.
+- [x] **6.1.a — Instruction Builder form + live map preview.** ✅ done
+  (2026-08-16, see changelog.md). Right-panel form: entity dropdown (reuses
+  `interactionStore.search`'s existing substring match, no new search logic
+  — just a new place to render it), animation dropdown hardcoded to the 5
+  V1 actions (Focus, Focus World, Highlight, Clear Highlight, Focus +
+  Highlight — roadmap.md section 4), duration input. Picking an entity
+  fires the existing `requestFocus`/`toggleEntity` calls (Phase 5) so the
+  map flies/highlights live. No "Add to Timeline" wiring yet, no store yet
+  — this step only validates "map stays clean, form drives map"
+  (docs/phase_6_arch.md) in isolation.
   *Demo:* pick "India" from the dropdown; map flies to it and highlights it,
-  without touching the canvas.
+  without touching the canvas. ✅ verified in-browser, along with direct
+  map click/hover (Phase 4) and SearchBox staying fully independent.
+  Also landed this step, beyond its original scope: the editor layout
+  shell (App.tsx/App.css three-pane grid, matching the reference mockup)
+  and a map contain-fit change (MapCanvas.tsx, stretch → letterboxed
+  contain) — both prerequisites the form needed a sane home to live in, see
+  changelog.md for the full writeup including the Phase 2 decision reversal.
 - [ ] **6.1.b — Scene model + sceneStore + minimal scene list.** `Scene`/
   `SceneAction` types (`actions: {type, params}[]`, per decision #6 above —
   array from day one even though only 1-2 actions ever populate it in V1).

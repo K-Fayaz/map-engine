@@ -5,6 +5,142 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-16 — Phase 6, baby-phase 6.1.a: Instruction Builder shell
+
+### Summary
+First implementation pass of Phase 6 (roadmap.md), scoped to baby-phase
+6.1.a per `.development_logs/plan-phase6-scenes-timeline.md`'s baby-phase
+breakdown -- the editor layout shell plus the Instruction Builder's form
+fields (entity picker, animation dropdown, duration input), with live map
+preview wired up. Explicitly does **not** yet include the Scene data model,
+"Add to Timeline," or any playback -- those are 6.1.b/6.1.c, not started.
+Preceded by an extended planning discussion (see that plan file and
+`docs/phase_6_arch.md`) that locked several decisions before any code was
+written: map stays click-free for building a story (form drives it, not the
+reverse), live one-way form-to-map preview, incremental UI-testable steps,
+and a data-model extensibility constraint (scene actions as a typed
+`{type, params}` array + registry dispatch, not hardcoded if/else) that
+doesn't apply yet since no Scene model exists this pass.
+
+### Changes
+
+**`App.tsx` / `App.css` (editor layout shell)**
+- New CSS grid (`editor-layout`): Map fills the top across both columns
+  initially, then revised so the Instruction Builder panel spans the full
+  right-column height (both the map and timeline rows), matching the
+  reference mockup exactly rather than being confined to the row next to
+  the timeline. Timeline and Map share the left column.
+- Timeline and Instruction Builder panels given a dark background
+  (`#181a1f`) with lighter borders/text for contrast; the map area itself
+  was deliberately left untouched.
+- The Instruction Builder's fields were initially split into two stacked
+  "zones" (mirroring the mockup's two visual boxes), then consolidated back
+  into a single compact block once real fields (not placeholder text)
+  revealed the 55%/45% split left a large dead gap under a short Animation
+  field -- fields now just stack from the top, gap collects harmlessly at
+  the bottom of the column instead of between fields.
+
+**`MapCanvas.tsx` (map fit: stretch -> contain)**
+- `baseScaleX`/`baseScaleY` changed from independent per-axis stretch
+  (world exactly fills the container on both axes, distorting aspect ratio)
+  to a uniform contain-fit scale (`Math.min(width/WORLD_WIDTH,
+  height/WORLD_HEIGHT)`), computed by a new `applyViewFit()` helper. This is
+  a deliberate reversal of a specific decision recorded in this changelog's
+  2026-08-02 Phase 2 entry, which chose per-axis stretch specifically to
+  avoid letterboxing -- that reasoning no longer holds now that the map's
+  area isn't ~2:1 (the editor layout eats into its width), and stretch was
+  visibly squashing the map vertically.
+- New `viewW`/`viewH` (the resulting contained content size, <= the real
+  canvas in one axis) and `letterboxX`/`letterboxY` (the margin that
+  centers it). Every existing camera.ts call that already worked in
+  "content space" (`clampCamera`, `zoomAt`, `viewportWorldBounds`,
+  `focusOnBounds` via `declutterLabels`/`declutterStates`/`onResize`/
+  `onFocusRequest`/onPointerMove-drag) needed no logic changes, just
+  `viewW`/`viewH` passed in place of the old full `app.screen` width/
+  height. Only code that touches *raw* screen/DOM pixel coordinates needed
+  an explicit letterbox adjustment: `worldContainer.position` (add the
+  offset) and `hitTestScreenPoint`/`onWheel`'s cursor position (subtract
+  it) -- verified in-browser that click-to-select is still pixel-accurate
+  (tested against Sri Lanka specifically) and cursor-anchored wheel-zoom
+  still anchors correctly post-change.
+
+**`InstructionBuilder.tsx` (new) / `InstructionBuilder.css` (new)**
+- Entity picker: text input + dropdown, reusing `interactionStore.search`
+  (no new search logic, just a new place to render results -- a form field
+  instead of a floating map overlay like `SearchBox.tsx`). Picking an
+  entity calls `interactionStore.toggleEntity(id, false)` +
+  `interactionStore.requestFocus(id)`, the same non-additive
+  select-and-fly-to pattern `SearchBox.tsx` uses -- this is the only path
+  that drives the map now; direct map click/hover (Phase 4) stays fully
+  independent and untouched, verified by clicking the map directly after a
+  form pick and confirming the map's selection changes while the form's own
+  "Entity" field stays showing the earlier pick (one-way link, no feedback
+  from map to form).
+- Animation dropdown: hardcoded `ANIMATION_OPTIONS` (Focus, Focus World,
+  Highlight, Clear Highlight, Focus + Highlight -- all 5 from roadmap.md
+  Phase 6 section 4, not just the 3 example names the plan file's decision
+  #6 abbreviated to). Purely local state, **no execution wiring** -- every
+  entity pick currently fires both toggleEntity and requestFocus regardless
+  of which animation is selected; decoupling that is 6.1.c's job (action
+  registry + playback), not this pass's.
+- Duration input: plain local numeric state (seconds, default 3), not yet
+  part of any Scene since no Scene model exists yet.
+- All styling lives in `InstructionBuilder.css`, not inline `style` objects
+  -- explicit user preference stated this session ("I dont like to have css
+  in tsx files"); existing inline-style code in `SearchBox.tsx`/`App.tsx`
+  was flagged but left as-is pending a decision on whether to convert it
+  too.
+- `color-scheme: dark` added to `.ib-input` (covers the `<select>` and
+  `<input>` fields) -- without it, some engines (WebKitGTK, what Tauri uses
+  on Linux, specifically flagged) paint a closed `<select>`'s
+  background/chevron using the OS's light widget theme regardless of the
+  `background`/`color` CSS set on it, producing washed-out low-contrast
+  text. Not verified screenshot-side (Chrome devtools, used for the rest of
+  this session's verification, doesn't reproduce this specific WebKitGTK
+  quirk) -- worth a manual check in the actual Tauri window.
+
+### Decisions
+- **Map contain-fit reverses a prior documented decision, deliberately.**
+  See MapCanvas.tsx changes above -- flagged explicitly to the user rather
+  than silently changed, since Phase 2's original reasoning was recorded in
+  this same file.
+- **Instruction Builder fields hardcoded, Scene model is not (once it
+  exists).** Discussed explicitly this session: hardcoding the dropdown's
+  fixed option list does not conflict with the "stay extensible" plan
+  decision -- that constraint targets the future Scene data model (`actions`
+  as a typed array) and playback dispatcher (registry, not if/else), neither
+  of which exists yet. `ANIMATION_OPTIONS`' `value`s (`"focus"`,
+  `"focusWorld"`, `"highlight"`, `"clearHighlight"`, `"focusHighlight"`)
+  were deliberately chosen to double as the future action-registry key.
+- **One-way form-to-map preview, not two-way.** Direct map click/hover
+  (Phase 4) and `SearchBox.tsx` remain fully independent of the Instruction
+  Builder's local `selectedEntity` state -- picking on the map never updates
+  the form, matching the plan file's decision #2.
+
+### Deferred / not yet implemented
+- Scene data model, `sceneStore`, "Add to Timeline" (6.1.b).
+- Action registry + basic sequential Play/Pause (6.1.c).
+- "Focus World" has no actual camera behavior wired up yet -- per
+  roadmap.md section 11/12, it should eventually zoom the camera back out
+  to frame the whole world (something like a `camera.reset()`), but no such
+  function exists in `camera.ts` yet; today picking it in the dropdown does
+  nothing (Animation is fully inert, as noted above).
+- "Highlight" as a *decoupled* action doesn't exist yet either -- the
+  underlying rendering (`drawHighlights`, Phase 4) works, but every pick
+  currently triggers both highlight and focus together regardless of the
+  dropdown's value.
+- Converting `SearchBox.tsx`/`App.tsx`'s remaining inline `style` objects to
+  CSS files, per the same-session preference that shaped
+  `InstructionBuilder.css` -- flagged to the user, not yet actioned.
+- Manual in-Tauri-window verification of the `color-scheme: dark` select
+  contrast fix (see above).
+- Full 6.1.a in-browser verification pass (todo 8 in this session) -- most
+  of it happened incrementally already (entity picker + live preview +
+  direct map click coexistence all screenshot-verified above), but hasn't
+  been formally closed out as one pass.
+
+---
+
 ## 2026-08-13 — Rivers excluded from hit-testing (search-only selection)
 
 ### Summary
