@@ -5,6 +5,171 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-16 — Phase 6, baby-phase 6.1.c: Action registry, sequential Play/Pause
+
+### Summary
+Third pass of Phase 6, same day as 6.1.a/6.1.b. Closes out 6.1 (per
+`plan-phase6-scenes-timeline.md`'s baby-phase breakdown): scenes built in
+the Instruction Builder now actually play back. Preceded by a design
+discussion (handler signature, registry shape, how handlers reach
+camera/highlight state) before any code was written -- see Decisions.
+Verified end-to-end in-browser with the roadmap's own demo sequence
+(India, Pakistan, China, all "Pan + Highlight", 3s): Play cycles through
+all three unattended, Pause freezes mid-sequence, and a subsequent Play
+resumes rather than restarting. Also verified the two previously-untested
+code paths this step introduced -- world-pan (no entity) and Clear
+Highlight -- each in isolation.
+
+### Changes
+
+**`actionRegistry.ts` (new)**
+- `ActionHandler = (params: Record<string, unknown>) => void` -- synchronous
+  and fire-and-forget. Handlers only set *intent* (e.g. request a camera
+  target); they don't await a transition finishing. The camera's existing
+  `lerpCamera` easing already makes the transition itself smooth, and this
+  step's playback engine is what sequences whole-scene *holds* on top of
+  that -- no transition/hold split (roadmap.md section 16, still deferred).
+- `registerAction(type, handler)` / `dispatchAction(action)` -- a `Map`
+  keyed by `action.type`, per `plan-phase6-scenes-timeline.md`'s decision
+  #6. Unknown types are a silent no-op, not an error, so a Scene from a
+  future version doesn't crash playback.
+- `dispatchScene(scene)` -- applies a Scene's full `camera` + `actions` in
+  one call. Kept as its own callable rather than inlined into the playback
+  loop, since 6.3 ("jump to scene N's state" on click/scrub) needs the
+  exact same primitive.
+- Three handlers registered: `pan` (entity -> `interactionStore.
+  requestFocus(entityId)`; no entity -> `requestFocus(null)`, the new
+  world-view case), `highlight` (`interactionStore.toggleEntity(entityId,
+  false)`), `clearHighlight` (`interactionStore.toggleEntity(null, false)`).
+  Handlers never touch `camera.ts`/`MapCanvas.tsx` state directly -- that
+  stays private to `MapCanvas.tsx`'s effect closure by design; they go
+  through `interactionStore`'s existing decoupled channels instead, the
+  same plumbing `SearchBox.tsx`/`InstructionBuilder.tsx` already use.
+
+**`interactionStore.ts`**
+- `requestFocus`/`onFocusRequest`/`FocusListener` widened from `(id:
+  string)` to `(id: string | null)` -- `null` now means "focus the whole
+  world," needed for the `pan` handler's entity-less case. The only two
+  existing callers (`SearchBox.tsx`, `InstructionBuilder.tsx`) already pass
+  non-null ids, so this is purely additive.
+
+**`MapCanvas.tsx`**
+- `onFocusRequest`'s handler gained an `id === null` branch: sets `target =
+  clampCamera({x:0, y:0, zoom:MIN_ZOOM}, ...)` directly instead of calling
+  `findById`/`focusOnBounds` -- `x:0,y:0,zoom:MIN_ZOOM` *is* the definition
+  of the default world view (see `camera.ts`'s `clampCamera`), so no bounds
+  math is needed. Closes a gap flagged as deferred in 6.1.a's changelog
+  entry ("Focus World has no camera behavior wired up yet").
+
+**`sceneStore.ts`**
+- Playback state/actions added to the same store as `scenes` (not a
+  separate store) -- it operates directly over `scenes`, and the Play/Pause
+  UI needs both together. `currentSceneIndex: number | null` / `isPlaying:
+  boolean` are reactive state; the `setTimeout` handle that actually drives
+  advancement (`holdTimer`) is deliberately *not* store state -- a
+  module-level variable instead, same reasoning `interactionStore.ts` uses
+  for its listener sets.
+- `playFrom(index)` (internal): calls `dispatchScene(scenes[index])`, sets
+  `currentSceneIndex`, arms `setTimeout(() => playFrom(index + 1),
+  scene.duration * 1000)`. Running past the last scene stops playback and
+  resets `currentSceneIndex` to `null`, so a later `play()` restarts from
+  scene 0 rather than staying stuck at the end.
+- `play()`: no-ops if already playing or the scene list is empty; otherwise
+  calls `playFrom(currentSceneIndex ?? 0)` -- `?? 0` is what makes a
+  post-pause `play()` resume from where it left off rather than restarting.
+- `pause()`: clears `holdTimer`, sets `isPlaying: false`. Does not track
+  elapsed time within the current scene's hold -- see Decisions.
+
+**`Timeline.tsx` / `Timeline.css`**
+- New single Play/Pause toggle button (not two separate buttons -- only one
+  of the two actions is ever valid at a time, so a second disabled button
+  would be redundant), disabled when there are no scenes.
+- The active scene's row (`index === currentSceneIndex`) gets a highlighted
+  border (`.timeline-row-active`) while playing, so it's visible which
+  scene is currently on-screen without watching the map itself.
+
+### Decisions
+- **Handlers reuse `interactionStore`'s existing decoupled channels,
+  never reach into `MapCanvas.tsx`'s camera state directly.** Camera
+  (`target`/`current`/`baseScaleX`/`baseScaleY`) is private to
+  `MapCanvas.tsx`'s effect closure by design; `requestFocus`/`toggleEntity`
+  were already the established bridge for "intent -> map reacts" (built for
+  `SearchBox.tsx` in Phase 5), so extending that bridge (widening
+  `requestFocus` to accept `null`) was chosen over opening a second,
+  parallel hole into `MapCanvas.tsx`.
+- **`highlight`/`clearHighlight` needed no new `interactionStore` method.**
+  Initially assumed a new deterministic set/clear method would be needed
+  (toggling seemed ambiguous), but `toggleEntity(id, false)` turned out to
+  already be non-additive/deterministic (replaces the whole selection
+  unconditionally), and `toggleEntity(null, false)` already clears
+  everything. Since `highlight` always replaces the entire selection, scene
+  playback never has more than one entity highlighted at once -- so
+  `clearHighlight`'s `params.entityId` (specific entity vs. clear-all,
+  flagged open in 6.1.b) is moot in practice: clearing "this entity" and
+  clearing "whatever's highlighted" are the same thing. Resolved
+  pragmatically rather than by adding new store surface.
+- **Resuming from Pause re-holds the current scene for its full duration,
+  not the remaining time.** No elapsed-time tracking -- a deliberately
+  rough edge, consistent with `plan-phase6-scenes-timeline.md`'s decision
+  #4 ("even a rough/unpolished sequential playback should be available").
+  Confirmed in-browser: pausing then resuming holds the paused scene for a
+  full new duration rather than continuing from where it was.
+- **`dispatchScene` kept as its own exported function, not inlined into the
+  playback loop**, specifically because 6.3 needs an identical "apply scene
+  N's state directly" primitive for click/scrub-to-jump -- avoids having to
+  extract it out of the playback loop later.
+
+### Bugs found, deliberately left unfixed (reverted on request)
+- **Live map preview doesn't respect the selected animation.**
+  `InstructionBuilder.tsx`'s `pickEntity` fires *both*
+  `interactionStore.toggleEntity` and `requestFocus` on every pick,
+  regardless of which animation is currently selected -- so picking "Pan"
+  (no highlight) still highlights the entity in the live preview, even
+  though the Scene actually added to the timeline won't highlight
+  anything. Flagged as a known gap back in 6.1.a's changelog entry
+  ("decoupling that is 6.1.c's job"), surfaced again by the user this
+  session. A fix was written and verified in-browser (route the preview
+  through the same `buildScene`/`dispatchScene` path playback uses, so the
+  preview can't drift from what's actually added) but reverted at the
+  user's request to revisit later -- `InstructionBuilder.tsx` is back to
+  the original dual-call `pickEntity`.
+
+### Investigated, ruled out as unrelated
+- Chrome DevTools MCP hit the same stale-profile-lock issue documented in
+  the 2026-08-12 changelog entry (a leftover Chrome process holding
+  `~/.cache/chrome-devtools-mcp/chrome-profile`), confirmed with the user
+  and the stale process killed before verification could proceed.
+- Screenshotting mid-sequence during verification was unreliable: each
+  `click()` tool round-trip cost ~15-20s of real wall-clock time in this
+  environment, longer than the 3s scene durations being tested, so a
+  couple of early "mid-sequence" screenshots were actually post-completion.
+  Not an app bug -- a testing-methodology trap worth remembering (use
+  longer scene durations, e.g. 10s+, when verifying timing-sensitive
+  behavior this way).
+
+### Deferred / not yet implemented
+- The live-preview animation-mismatch bug above -- fix written, reverted,
+  to be revisited.
+- Visual timeline (6.2): duration-proportional blocks, drag-resize, delete,
+  reorder. Today's Timeline is still 6.1.b's plain list, just with a
+  Play/Pause toggle and an active-row highlight added on top.
+- Scene selection/scrub sync (6.3) -- `dispatchScene` exists and is exactly
+  the primitive 6.3 will need, but nothing calls it outside the playback
+  loop yet.
+- **Playback has no guard against the scene list changing while playing.**
+  Not a bug today (nothing can delete/reorder yet), but once 6.2 ships,
+  pausing mid-playback and then deleting/reordering scenes will leave
+  `currentSceneIndex` pointing at the wrong scene (or past the array end)
+  with no correction logic. Worth fixing when 6.2 lands, not before.
+- Text instruction layer (6.4) -- unstarted, lowest priority per the plan.
+
+### Phase 6, baby-phase 6.1 — complete
+All three sub-steps (6.1.a form + preview, 6.1.b Scene model + timeline
+list, 6.1.c action registry + Play/Pause) are done. Next up per
+`plan-phase6-scenes-timeline.md` is 6.2 (Visual Timeline).
+
+---
+
 ## 2026-08-16 — Phase 6, baby-phase 6.1.b: Scene model, sceneStore, timeline list
 
 ### Summary
