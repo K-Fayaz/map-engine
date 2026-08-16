@@ -18,6 +18,17 @@
   font-family: sans-serif;
   background: #25272e;
   color: #e6e6e6;
+  /* Without this, some engines (WebKitGTK/Tauri in particular) paint
+     <select>'s closed-state background/chevron using the OS's light widget
+     theme regardless of the background/color set above, leaving washed-out
+     low-contrast text. color-scheme tells the engine this control should
+     use its dark native rendering, not just our text color overrides. */
+  color-scheme: dark;
+}
+
+.ib-input option {
+  background: #25272e;
+  color: #e6e6e6;
 }
 
 .ib-list {
