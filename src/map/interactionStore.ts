@@ -20,7 +20,10 @@ interface InteractionState {
 }
 
 type Listener = () => void;
-type FocusListener = (id: string) => void;
+// `id: null` means "focus the whole world" (e.g. Phase 6's target-less
+// "pan" action) rather than a specific entity -- MapCanvas.tsx's
+// onFocusRequest handler branches on it instead of calling findById.
+type FocusListener = (id: string | null) => void;
 
 function createInteractionStore() {
   let state: InteractionState = {
@@ -115,7 +118,7 @@ function createInteractionStore() {
       focusListeners.add(listener);
       return () => focusListeners.delete(listener);
     },
-    requestFocus(id: string) {
+    requestFocus(id: string | null) {
       for (const listener of focusListeners) listener(id);
     },
   };

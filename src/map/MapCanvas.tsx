@@ -936,6 +936,15 @@ export function MapCanvas() {
         // lerpCamera (applyCameraTransform above) eases `current` toward it
         // every frame, same as wheel-zoom does.
         unsubscribeFocus = interactionStore.onFocusRequest((id) => {
+          // null = "focus the whole world" (Phase 6's target-less "pan"
+          // action) -- the world-space bounds fit computation below doesn't
+          // apply, since there's no entity to look up; zoom = MIN_ZOOM,
+          // x/y = 0 already *is* the definition of the default world view
+          // (clampCamera forces exactly this at zoom 1, see camera.ts).
+          if (id === null) {
+            target = clampCamera({ x: 0, y: 0, zoom: MIN_ZOOM }, viewW, viewH, MAX_ZOOM);
+            return;
+          }
           const entity = findById(id);
           if (!entity) return;
           const bb = entity.boundingBox;

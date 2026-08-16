@@ -1,3 +1,31 @@
+.timeline-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.timeline-playback-toggle {
+  align-self: flex-start;
+  margin: 12px 12px 0;
+  padding: 6px 16px;
+  font-family: sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  color: #e6e6e6;
+  background: #2c2f38;
+  border: 1px solid #383b42;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.timeline-playback-toggle:hover:not(:disabled) {
+  background: #383b42;
+}
+
+.timeline-playback-toggle:disabled {
+  color: #6a6e76;
+  cursor: default;
+}
+
 .timeline-empty {
   font-family: sans-serif;
   font-size: 13px;
@@ -40,4 +68,9 @@
 .timeline-duration {
   font-size: 11px;
   color: #6a6e76;
+}
+
+.timeline-row-active {
+  border-color: #5b8def;
+  box-shadow: 0 0 0 1px #5b8def;
 }

@@ -50,6 +50,13 @@ export function InstructionBuilder() {
   // path that drives the map now -- the map itself stays click/hover-
   // selectable independently (Phase 4, untouched), but building a story
   // never requires touching it.
+  //
+  // Known gap (flagged 6.1.a, still true here): every pick fires *both*
+  // toggleEntity and requestFocus regardless of the selected animation, so
+  // e.g. picking "Pan" (no highlight) still highlights the entity in the
+  // live preview -- misleading, since the Scene actually added won't
+  // highlight it. Deliberately left as-is for now (reverted a buildScene/
+  // dispatchScene-based fix here on request) -- revisit later.
   const pickEntity = (entity: Entity) => {
     setSelectedEntity(entity);
     setQuery("");
