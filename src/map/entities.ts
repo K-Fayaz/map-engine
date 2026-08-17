@@ -56,10 +56,20 @@ export interface StateGeoFeatureCollection {
 }
 
 // Naive min/max over raw coordinates. Countries that cross the antimeridian
-// (Russia, Fiji) will get a wrong, globe-spanning box here (minLon=-180,
-// maxLon=180) for the same reason raw rendering did before the
-// antimeridian split fix in MapCanvas.tsx -- deferred until Phase 5 (Smart
-// Camera) actually consumes bounding boxes for framing.
+// (Russia, the USA via the Aleutians, Fiji) get a wrong, globe-spanning box
+// here (minLon near -180, maxLon near 180) for the same reason raw
+// rendering did before the antimeridian split fix in MapCanvas.tsx.
+// Deliberately left this way, not fixed here -- this is what populates
+// entity.boundingBox, which findEntityAt/findRiverAt (hit-test prefilters)
+// and declutterStates (viewport-culling prefilter) also read, and at every
+// one of those call sites an overly-*wide* box is explicitly documented as
+// harmless (it only ever fails to reject/cull early, never produces a
+// wrong result). A *tighter* box computed in a shifted coordinate space --
+// which is what an antimeridian-correct fix needs, see
+// computeFramingBounds below -- would actively misreject valid points on
+// the "wrong" side of the shift if plugged into those same raw-lon
+// prefilters. So the fix for camera framing lives in a separate function
+// instead of changing this one's behavior.
 export function computeBoundingBox(geometry: Geometry): BoundingBox {
   if (geometry.type === "Point") {
     const [lon, lat] = geometry.coordinates;
@@ -103,6 +113,96 @@ export function computeBoundingBox(geometry: Geometry): BoundingBox {
   }
 
   return { minLon, minLat, maxLon, maxLat };
+}
+
+// Antimeridian-aware bounding box for camera framing (Phase 6 pan/highlight
+// fly-to) -- a separate function from computeBoundingBox above, not a
+// replacement for it; see that function's comment for why its behavior is
+// deliberately left as-is for hit-testing/culling. Point/LineString/
+// MultiLineString geometry has no antimeridian ambiguity to correct here
+// (rivers deliberately skip this too, see findRiverAt/pointNearLine), so
+// those are delegated straight through unchanged.
+//
+// Detection: measure the entity's longitude span two ways -- as-is, and
+// with every negative longitude shifted by +360 -- and check whether the
+// shifted version is *tighter* (smaller max-min span). Countries that
+// cross the antimeridian (Russia's Chukotka peninsula, the USA's western
+// Aleutian islands, Fiji) have points clustered near both -180 and +180,
+// which the shift re-expresses as one small contiguous span instead of a
+// ~360deg one -- confirming a genuine crossing. For every entity that
+// doesn't cross the seam, the shift either has no effect or produces a
+// *larger* span, so this never misfires for ordinary countries that
+// merely straddle 0 deg longitude (Algeria, Ghana, Spain, ...).
+//
+// Framing: an early version of this function returned the shifted-space
+// box directly when a crossing was detected, but that's a bug, not a fix
+// -- render.ts's project() is plain linear (lon -> x), with no
+// wraparound, so a shifted value past 180 projects to a screen position
+// nowhere near the entity (verified in-browser: "pan to USA" landed on
+// Asia). There is no rectangular, non-wrapping camera viewport on this
+// flat, non-repeating map that could frame territory on *both* sides of
+// the seam in one shot anyway. So instead: once a crossing is confirmed,
+// split points by raw sign (negative vs non-negative longitude) and keep
+// only the side with the larger span -- the country's dominant landmass
+// -- using its own plain, already-valid min/max. The minority sliver on
+// the far side of the seam (Chukotka, the westernmost Aleutians) ends up
+// just outside the frame, which reads as "panned to Russia/the USA"
+// instead of "zoomed out to the whole world." Verified: USA's dominant
+// (negative) side spans ~111deg (mainland+Alaska+Hawaii) vs. ~7deg for the
+// stray Aleutian tip; Russia's dominant (positive) side spans ~160deg vs.
+// ~10deg for Chukotka.
+export function computeFramingBounds(geometry: Geometry): BoundingBox {
+  if (geometry.type !== "Polygon" && geometry.type !== "MultiPolygon") {
+    return computeBoundingBox(geometry);
+  }
+
+  let minLon = Infinity;
+  let minLat = Infinity;
+  let maxLon = -Infinity;
+  let maxLat = -Infinity;
+  let minLonShifted = Infinity;
+  let maxLonShifted = -Infinity;
+  // Per-side (raw lon < 0 vs >= 0) tracking, only consulted if a crossing
+  // is confirmed below.
+  let negMinLon = Infinity, negMaxLon = -Infinity, negMinLat = Infinity, negMaxLat = -Infinity;
+  let posMinLon = Infinity, posMaxLon = -Infinity, posMinLat = Infinity, posMaxLat = -Infinity;
+
+  const polygons =
+    geometry.type === "Polygon" ? [geometry.coordinates] : geometry.coordinates;
+
+  for (const rings of polygons) {
+    for (const ring of rings) {
+      for (const [lon, lat] of ring) {
+        if (lon < minLon) minLon = lon;
+        if (lon > maxLon) maxLon = lon;
+        if (lat < minLat) minLat = lat;
+        if (lat > maxLat) maxLat = lat;
+        const shiftedLon = lon < 0 ? lon + 360 : lon;
+        if (shiftedLon < minLonShifted) minLonShifted = shiftedLon;
+        if (shiftedLon > maxLonShifted) maxLonShifted = shiftedLon;
+        if (lon < 0) {
+          if (lon < negMinLon) negMinLon = lon;
+          if (lon > negMaxLon) negMaxLon = lon;
+          if (lat < negMinLat) negMinLat = lat;
+          if (lat > negMaxLat) negMaxLat = lat;
+        } else {
+          if (lon < posMinLon) posMinLon = lon;
+          if (lon > posMaxLon) posMaxLon = lon;
+          if (lat < posMinLat) posMinLat = lat;
+          if (lat > posMaxLat) posMaxLat = lat;
+        }
+      }
+    }
+  }
+
+  if (maxLonShifted - minLonShifted >= maxLon - minLon) {
+    return { minLon, minLat, maxLon, maxLat };
+  }
+
+  if (negMaxLon - negMinLon >= posMaxLon - posMinLon) {
+    return { minLon: negMinLon, minLat: negMinLat, maxLon: negMaxLon, maxLat: negMaxLat };
+  }
+  return { minLon: posMinLon, minLat: posMinLat, maxLon: posMaxLon, maxLat: posMaxLat };
 }
 
 // Shoelace formula over each ring, in raw lon/lat degrees -- not a true

@@ -13,6 +13,7 @@ import {
   buildSeaEntities,
   buildLabelEntities,
   findEntityAt,
+  computeFramingBounds,
   type Entity,
 } from "./entities";
 import {
@@ -34,6 +35,7 @@ import {
   clampCamera,
   zoomAt,
   lerpCamera,
+  tweenCamera,
   viewportWorldBounds,
   screenToWorld,
   focusOnBounds,
@@ -626,12 +628,29 @@ export function MapCanvas() {
         let current: Camera = { x: 0, y: 0, zoom: 1 };
         let target: Camera = { ...current };
 
+        // A scripted (Phase 6 scene) pan in progress, or null when none is
+        // running -- entirely separate from target/lerpCamera's continuous
+        // interactive ease above (see camera.ts's tweenCamera comment for
+        // why). Sets `current` directly from elapsed wall-clock time each
+        // frame while active, instead of easing toward `target`.
+        let scriptedPan: { from: Camera; to: Camera; startTime: number; durationMs: number } | null = null;
+
         // Applies the current camera state to the scene graph -- called
         // once synchronously below (so the initial declutterLabels() call
         // sees correct transforms instead of Pixi's default (1,1) scale,
         // before the ticker has ever run) and every tick thereafter.
         function applyCameraTransform() {
-          current = lerpCamera(current, target, EASE_FACTOR);
+          if (scriptedPan) {
+            const elapsed = performance.now() - scriptedPan.startTime;
+            const progress = Math.min(1, elapsed / scriptedPan.durationMs);
+            current = tweenCamera(scriptedPan.from, scriptedPan.to, progress);
+            if (progress >= 1) {
+              target = scriptedPan.to;
+              scriptedPan = null;
+            }
+          } else {
+            current = lerpCamera(current, target, EASE_FACTOR);
+          }
           worldContainer.position.set(current.x + letterboxX, current.y + letterboxY);
           worldContainer.scale.set(baseScaleX * current.zoom, baseScaleY * current.zoom);
           setVisibleAboveZoom(statesLayer, current.zoom, STATE_ZOOM_THRESHOLD);
@@ -929,37 +948,52 @@ export function MapCanvas() {
         unsubscribeInteraction = interactionStore.subscribe(drawHighlights);
         drawHighlights();
 
-        // Fly the camera to fit whatever entity SearchBox just requested
-        // focus for (see interactionStore.requestFocus). Decoupled from
+        // Fly the camera to fit whatever entity SearchBox/InstructionBuilder
+        // (fast interactive fly-to) or Phase 6 scene playback (scripted,
+        // durationSeconds given) just requested focus for. Decoupled from
         // drawHighlights above -- a focus request isn't itself a
-        // selection/hover state change. Only sets `target`; the ticker's
-        // lerpCamera (applyCameraTransform above) eases `current` toward it
-        // every frame, same as wheel-zoom does.
-        unsubscribeFocus = interactionStore.onFocusRequest((id) => {
+        // selection/hover state change.
+        unsubscribeFocus = interactionStore.onFocusRequest((id, durationSeconds) => {
           // null = "focus the whole world" (Phase 6's target-less "pan"
           // action) -- the world-space bounds fit computation below doesn't
           // apply, since there's no entity to look up; zoom = MIN_ZOOM,
           // x/y = 0 already *is* the definition of the default world view
           // (clampCamera forces exactly this at zoom 1, see camera.ts).
+          let newTarget: Camera;
           if (id === null) {
-            target = clampCamera({ x: 0, y: 0, zoom: MIN_ZOOM }, viewW, viewH, MAX_ZOOM);
-            return;
+            newTarget = clampCamera({ x: 0, y: 0, zoom: MIN_ZOOM }, viewW, viewH, MAX_ZOOM);
+          } else {
+            const entity = findById(id);
+            if (!entity) return;
+            // computeFramingBounds, not entity.boundingBox -- the latter is
+            // deliberately left naive (antimeridian-wide) for hit-test/
+            // culling prefilters elsewhere; framing needs the tighter,
+            // antimeridian-aware box instead (see entities.ts).
+            const bb = computeFramingBounds(entity.geometry);
+            // project()'s y is inverted (higher lat -> smaller y), so minLat
+            // maps to the world-space maxY and maxLat maps to minY.
+            const [minX, maxY] = project(bb.minLon, bb.minLat);
+            const [maxX, minY] = project(bb.maxLon, bb.maxLat);
+            newTarget = focusOnBounds(
+              { minX, minY, maxX, maxY },
+              viewW,
+              viewH,
+              baseScaleX,
+              baseScaleY,
+              MAX_ZOOM,
+            );
           }
-          const entity = findById(id);
-          if (!entity) return;
-          const bb = entity.boundingBox;
-          // project()'s y is inverted (higher lat -> smaller y), so minLat
-          // maps to the world-space maxY and maxLat maps to minY.
-          const [minX, maxY] = project(bb.minLon, bb.minLat);
-          const [maxX, minY] = project(bb.maxLon, bb.maxLat);
-          target = focusOnBounds(
-            { minX, minY, maxX, maxY },
-            viewW,
-            viewH,
-            baseScaleX,
-            baseScaleY,
-            MAX_ZOOM,
-          );
+          // Scripted: glide from wherever the camera is right now to
+          // newTarget over exactly durationSeconds (camera.ts's
+          // tweenCamera, driven each frame in applyCameraTransform above).
+          // Unscripted (no duration given): same fast interactive ease as
+          // before -- only sets `target`, the ticker's lerpCamera carries
+          // `current` toward it, same as wheel-zoom does.
+          if (durationSeconds !== undefined) {
+            scriptedPan = { from: current, to: newTarget, startTime: performance.now(), durationMs: durationSeconds * 1000 };
+          } else {
+            target = newTarget;
+          }
         });
 
         // Wheel zoom: cursor-anchored, eased (only `target` is set here --

@@ -75,6 +75,27 @@ export function lerpCamera(current: Camera, target: Camera, factor: number): Cam
   };
 }
 
+// Fixed-duration camera interpolation for scripted (Phase 6 scene) pans --
+// deliberately separate from lerpCamera above, not a reuse of it.
+// lerpCamera is an *asymptotic* ease toward a `target` that can itself keep
+// moving (built for open-ended interactive input -- wheel-zoom, drag), so it
+// settles in a roughly-fixed, distance-independent time regardless of what
+// a caller might want. A scripted "pan to India over 2 seconds" needs a
+// deterministic interpolation between two known, fixed endpoints across
+// exactly that much wall-clock time instead -- a different math problem,
+// so it gets its own function rather than bending lerpCamera to do both.
+// `progress` is elapsed/duration, 0..1 linear; eased internally (ease-
+// in-out cubic) so the motion still feels natural, not linear/robotic.
+export function tweenCamera(from: Camera, to: Camera, progress: number): Camera {
+  const t =
+    progress < 0.5 ? 4 * progress ** 3 : 1 - Math.pow(-2 * progress + 2, 3) / 2;
+  return {
+    x: from.x + (to.x - from.x) * t,
+    y: from.y + (to.y - from.y) * t,
+    zoom: from.zoom + (to.zoom - from.zoom) * t,
+  };
+}
+
 // Screen point -> world-space point (same space project()/unproject() in
 // render.ts use), the inverse of the transform MapCanvas.tsx's ticker
 // applies each frame. Same formula viewportWorldBounds below applies to each

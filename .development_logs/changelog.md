@@ -5,6 +5,195 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-17 — Antimeridian-aware camera framing (Pan/Highlight bug fix)
+
+### Summary
+User-reported: "Pan to Russia" or "Pan to USA" zoomed out to almost the
+whole world instead of framing the country. Root cause: `entities.ts`'s
+`computeBoundingBox` does a naive min/max over raw longitude, and both
+countries have territory that crosses the antimeridian (Russia's Chukotka
+peninsula, the USA's western Aleutian islands) -- points cluster near both
+-180 and +180, so the naive box comes out ~358-360deg wide, forcing
+`focusOnBounds` to zoom out to fit nearly the entire globe's width. This
+was a known, previously-documented gap (2026-08-13's camera fly-to entry
+flagged it for Russia/Fiji specifically), never fixed because nothing
+consumed bounding boxes for framing until Phase 6.
+
+Confirmed the diagnosis by computing both countries' real bounding boxes
+directly from the vendored data before touching any code (`minLon: -178.19,
+maxLon: 179.78` for the USA; `minLon: -180, maxLon: 179.88` for Russia --
+both ~358-360deg spans). A first fix attempt (return the shifted-space box
+directly once a crossing is detected) was verified *wrong* in-browser --
+"pan to USA" landed on Asia, since `render.ts`'s `project()` is plain
+linear with no wraparound and a longitude past 180 projects nowhere near
+the entity. Corrected and re-verified: USA now frames mainland+Alaska+
+Hawaii tightly, Russia frames Kaliningrad-to-Bering-coast tightly, and
+France (a real multi-continental country via overseas territories, not an
+antimeridian case) is unaffected -- confirming the fix doesn't misfire on
+ordinary countries.
+
+### Changes
+
+**`entities.ts`**
+- New `computeFramingBounds(geometry)` -- deliberately a *separate*
+  function from `computeBoundingBox`, not a replacement for it.
+  `computeBoundingBox`'s naive (antimeridian-wide) output is what populates
+  `entity.boundingBox`, which `findEntityAt`/`findRiverAt` (hit-test
+  prefilters) and `declutterStates` (viewport-culling prefilter) also read
+  -- at every one of those call sites, an overly-*wide* box is explicitly
+  documented as harmless (it only ever fails to reject/cull early, never
+  produces a wrong result). A *narrow* box computed in a shifted coordinate
+  space would actively misreject valid points on the "wrong" side of the
+  shift if it were plugged into those same raw-lon prefilters, so the
+  framing fix lives in its own function, never stored on `Entity` or fed
+  into hit-testing. `computeBoundingBox`'s own doc comment updated to
+  explain why it's deliberately left as-is rather than "fixed in place."
+- `computeFramingBounds` detects a crossing by comparing the naive
+  longitude span against a shifted-by-360 span (shift every negative
+  longitude by +360, remeasure) -- if the shifted version is tighter, a
+  crossing is confirmed. This never misfires on ordinary countries that
+  merely straddle 0deg longitude (Algeria, Ghana, Spain, ...): shifting
+  only matters when points cluster near -180, so for those countries the
+  shift either has no effect or produces a *larger* span, and the as-is
+  version wins on its own.
+- Once a crossing is confirmed, splits all points by raw sign (negative vs.
+  non-negative longitude) and keeps only the side with the larger span --
+  the country's actual dominant landmass -- using its own plain,
+  already-valid min/max. The minority sliver on the far side of the seam
+  (Chukotka, the westernmost Aleutians) ends up just outside the frame.
+  Non-Polygon/MultiPolygon geometry (Point, LineString/MultiLineString --
+  rivers) is delegated straight to `computeBoundingBox` unchanged; rivers
+  already deliberately skip antimeridian handling entirely (see
+  `findRiverAt`/`pointNearLine`), and no vendored river crosses the seam.
+
+**`MapCanvas.tsx`**
+- `onFocusRequest`'s entity branch now calls
+  `computeFramingBounds(entity.geometry)` instead of reading
+  `entity.boundingBox` directly. The world-pan (`id === null`) branch is
+  unaffected -- it never reads a bounding box at all.
+
+### Decisions
+- **A separate function, not a fix-in-place.** Reusing/narrowing
+  `computeBoundingBox` itself was considered and rejected: its result is
+  load-bearing for hit-testing/culling prefilters elsewhere, all of which
+  are documented as relying on "too wide is harmless." A tighter-but-
+  differently-computed box is not a strict improvement for those call
+  sites -- it would introduce a real misrejection risk for points on the
+  minority side of a crossing (e.g. a click actually landing in Chukotka).
+- **Drop the minority side entirely, don't try to represent a wrapping
+  box.** Considered returning the shifted-space box directly (simpler code)
+  but verified in-browser that it's actively wrong -- `project()` has no
+  wraparound, so there is no rectangular, non-wrapping camera viewport on
+  this flat map that can frame territory on both sides of the seam in one
+  shot. Framing the dominant landmass tightly and letting the minority
+  sliver fall outside the frame is the best achievable outcome without a
+  much larger change (making the map tile/repeat), which is out of scope.
+- **Verified with a real regression check (France), not just the two
+  reported countries.** France's bounding box is also very wide (mainland
+  Europe to French Guiana/Caribbean overseas territories), but for an
+  unrelated reason (real multi-continental territory, no antimeridian
+  crossing) -- confirmed the crossing-detection check correctly leaves it
+  untouched rather than misfiring on any "wide bbox," specifically only on
+  genuine seam crossings.
+
+### Deferred / not yet implemented
+- Rivers, lakes, and seas were not audited for antimeridian crossings --
+  `computeFramingBounds` would handle one correctly if it existed (same
+  Polygon/MultiPolygon logic would apply to a sea/lake), but no vendored
+  entity of those types is currently known to cross the seam, so this
+  wasn't specifically verified.
+
+---
+
+## 2026-08-16 — Phase 6 follow-up: Scripted (duration-driven) camera pans
+
+### Summary
+User-prompted design discussion, then a fix: "2 second pan to India" was
+executing as an instant/interactive-speed fly-to followed by a 2-second
+*hold* once already arrived, not a camera movement that itself takes 2
+seconds. Discussed the two possible readings of "duration" (transition
+length vs. hold length) before writing code -- landed on a single
+resolution: "duration" always means "how long this scene lasts," uniformly
+across animation types; movement actions (pan) glide across the *entire*
+window, state actions (highlight/clearHighlight) apply instantly and
+simply persist for the rest of it. Avoids introducing a second
+`transitionDuration`/`holdDuration` form field (roadmap.md section 16,
+still deferred) while still fixing the actual reported behavior. Verified
+in-browser: a 30s scripted pan visibly glided across the globe (screenshot
+mid-flight over Africa, between Japan and Argentina) rather than snapping;
+a Highlight scene's border appeared immediately while the camera was still
+mid-glide toward the final framing, confirming the two run concurrently as
+intended.
+
+### Changes
+
+**`camera.ts`**
+- New `tweenCamera(from, to, progress)` -- fixed-duration interpolation
+  between two known endpoints (ease-in-out cubic), deliberately a separate
+  function from the existing `lerpCamera`, not a reuse of it. `lerpCamera`
+  is an asymptotic ease toward a `target` that can itself keep moving
+  (built for open-ended interactive input -- wheel-zoom, drag) and settles
+  in a roughly-fixed, distance-independent time regardless of what a caller
+  wants; bending it to also do deterministic "arrive in exactly N seconds"
+  animation risked subtly regressing the already-proven interactive feel.
+
+**`interactionStore.ts`**
+- `requestFocus`/`onFocusRequest`/`FocusListener` widened with an optional
+  `durationSeconds` -- omitted, unchanged fast interactive fly-to (every
+  existing caller: `SearchBox.tsx`, `InstructionBuilder.tsx`'s live
+  preview); given, signals a scripted glide.
+
+**`MapCanvas.tsx`**
+- New `scriptedPan` state (`{from, to, startTime, durationMs} | null`),
+  checked first each tick in `applyCameraTransform`: while active, `current`
+  is set directly from `tweenCamera` against real elapsed wall-clock time
+  instead of easing toward `target`; clears itself and syncs `target` once
+  `progress >= 1`, so subsequent interactive input (wheel-zoom etc.)
+  continues smoothly from the resting position.
+- `onFocusRequest`'s handler now branches on whether a duration was given
+  -- scripted (`scriptedPan` armed) vs. the original fast interactive path
+  (`target` set directly), for both the entity and world-pan cases.
+
+**`actionRegistry.ts`**
+- `ActionHandler` now also receives the owning Scene's `durationSeconds`
+  (threaded through from `dispatchScene`/`dispatchAction`). The `pan`
+  handler forwards it into `requestFocus`; `highlight`/`clearHighlight`
+  ignore it (prefixed `_durationSeconds`) since applying a highlight has
+  nothing to animate -- `durationSeconds` there is just how long the
+  playback engine's hold keeps it visible, not something this handler
+  drives itself.
+
+### Decisions
+- **One duration field, interpreted per-action-type at dispatch, not a
+  transitionDuration/holdDuration split.** Discussed explicitly: "duration"
+  keeps meaning the same thing to the person filling out the form ("how
+  long is this moment on screen") regardless of which animation they pick
+  -- only the internal choreography differs (glide-for-the-whole-window vs.
+  snap-and-hold-for-the-whole-window), invisibly to the user. Resolves the
+  ambiguity without adding a second input.
+- **A new, separate tween mechanism, not a retrofit of the existing
+  interactive ease.** Same reasoning as 6.1.c's earlier decisions in this
+  file: camera state stays private to `MapCanvas.tsx`, new capability
+  layers on top via the existing decoupled `requestFocus` channel rather
+  than opening a new hole into it or changing what already works.
+- **Known, accepted edge: Pause doesn't freeze an in-flight scripted
+  tween.** `sceneStore.ts`'s `pause()` only clears the scene-advance hold
+  timer; it has no way to reach into `MapCanvas.tsx`'s private
+  `scriptedPan` state to cancel it (same encapsulation principle that kept
+  camera internals out of the action registry in 6.1.c), and resuming
+  re-dispatches the scene from scratch regardless (6.1.c's already-accepted
+  "resume re-holds the full duration" rough edge). Not fixed this pass --
+  would need a new cancel-capable channel, out of scope for what was asked.
+
+### Deferred / not yet implemented
+- Pause not freezing an in-flight camera tween (see Decisions above).
+- No verification of scripted pans interacting with manual wheel-zoom/drag
+  input *during* playback -- the architecture doc's "map stays output-only
+  during a story" framing makes this a low-priority edge, not hardened
+  either way.
+
+---
+
 ## 2026-08-16 — Phase 6 follow-up: "Highlight" merged with "Pan + Highlight"
 
 ### Summary

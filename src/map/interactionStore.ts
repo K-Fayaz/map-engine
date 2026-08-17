@@ -23,7 +23,11 @@ type Listener = () => void;
 // `id: null` means "focus the whole world" (e.g. Phase 6's target-less
 // "pan" action) rather than a specific entity -- MapCanvas.tsx's
 // onFocusRequest handler branches on it instead of calling findById.
-type FocusListener = (id: string | null) => void;
+// `durationSeconds`, when given, means "glide there over exactly this many
+// seconds" (a scripted Phase 6 scene pan, via camera.ts's tweenCamera) --
+// omitted, it's the original fast interactive fly-to (SearchBox,
+// InstructionBuilder's live preview), unchanged from before this existed.
+type FocusListener = (id: string | null, durationSeconds?: number) => void;
 
 function createInteractionStore() {
   let state: InteractionState = {
@@ -118,8 +122,8 @@ function createInteractionStore() {
       focusListeners.add(listener);
       return () => focusListeners.delete(listener);
     },
-    requestFocus(id: string | null) {
-      for (const listener of focusListeners) listener(id);
+    requestFocus(id: string | null, durationSeconds?: number) {
+      for (const listener of focusListeners) listener(id, durationSeconds);
     },
   };
 }
