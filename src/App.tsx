@@ -1,6 +1,5 @@
 import "./App.css";
 import { MapCanvas } from "./map/MapCanvas";
-import { SearchBox } from "./map/SearchBox";
 import { InstructionBuilder } from "./map/InstructionBuilder";
 import { Timeline } from "./map/Timeline";
 
@@ -8,12 +7,17 @@ import { Timeline } from "./map/Timeline";
 // Instruction Builder split across the bottom. MapCanvas already resizes to
 // whatever container it's given (`resizeTo: container` in MapCanvas.tsx),
 // so shrinking its area here needs no changes there.
+//
+// SearchBox.tsx (the floating in-map search overlay) was removed here --
+// the Instruction Builder's entity picker is now the only path used to
+// build a story (per docs/phase_6_arch.md's "keep the map clean"), so the
+// map-embedded search was redundant. Direct map click/hover (Phase 4)
+// stays fully independent, unaffected by this.
 function App() {
   return (
     <div className="editor-layout">
       <div className="editor-map">
         <MapCanvas />
-        <SearchBox />
       </div>
       <div className="editor-timeline">
         <Timeline />

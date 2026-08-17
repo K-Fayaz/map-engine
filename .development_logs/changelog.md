@@ -5,6 +5,45 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-17 — Live-preview animation bug fix + SearchBox removal
+
+### Summary
+Two small follow-ups. First, fixed the live-preview bug flagged since
+6.1.a and reverted once already this session: `InstructionBuilder.tsx`'s
+`pickEntity` used to fire both `toggleEntity` and `requestFocus` on every
+pick regardless of the selected animation, so picking "Pan" still showed a
+highlight in the preview even though the Scene being built wouldn't
+highlight anything. Second, removed `SearchBox.tsx` (the floating in-map
+search overlay) entirely -- with the Instruction Builder now the only path
+used to build a story (per `docs/phase_6_arch.md`), the map-embedded search
+was redundant.
+
+### Changes
+
+**`InstructionBuilder.tsx`**
+- `pickEntity` now branches on `animation`: `requestFocus` fires for every
+  animation (visual confirmation of the pick, plan decision #2), but
+  `toggleEntity` (the highlight) only fires for `"highlight"`. Deliberately
+  *not* reusing `buildScene`/`dispatchScene` here -- `dispatchScene` now
+  always threads the Scene's `duration` into a scripted glide (see the
+  pan-duration fix), so reusing it for the live preview would make every
+  pick glide for the chosen duration instead of confirming it instantly.
+  Caught a self-introduced bug while verifying this in-browser: the first
+  pass omitted `requestFocus` from the `"clearHighlight"` case entirely,
+  giving zero visual feedback when picking a clear-highlight target --
+  fixed so it still pans (just never highlights).
+
+**`SearchBox.tsx`** -- deleted. `App.tsx` no longer imports/renders it;
+no other file had a real (non-comment) dependency on it.
+
+### Decisions
+- **`clearHighlight` previews with a pan, not nothing.** Its Scene ignores
+  which entity was picked (the handler just clears whatever's currently
+  highlighted), but the live preview still pans there so the user gets
+  *some* confirmation they picked the right target.
+
+---
+
 ## 2026-08-17 — Antimeridian-aware camera framing (Pan/Highlight bug fix)
 
 ### Summary

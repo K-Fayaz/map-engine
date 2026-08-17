@@ -4,11 +4,12 @@ import type { Entity } from "./entities";
 // Selection/hover state, shared between MapCanvas.tsx's imperative Pixi code
 // (which reads/writes it directly, via the exported singleton, to avoid
 // tearing down/rebuilding the map on every hover) and React components
-// (SearchBox, via the hook below). No state-management library is installed
-// in this repo -- this is a minimal plain pub/sub, not a general-purpose
-// store. `toggleEntity`/`hoverEntity` are callable from anywhere (pointer
-// handlers, search results, or later programmatically from Phase 5/6 code),
-// matching architecture.md's "usable manually and through AI" principle.
+// (InstructionBuilder, via the hook below). No state-management library is
+// installed in this repo -- this is a minimal plain pub/sub, not a
+// general-purpose store. `toggleEntity`/`hoverEntity` are callable from
+// anywhere (pointer handlers, the Instruction Builder's entity picker, or
+// programmatically from Phase 6 playback), matching architecture.md's
+// "usable manually and through AI" principle.
 interface InteractionState {
   entities: Entity[];
   // A Set, not a single id -- multi-select (ctrl/cmd+click to add/remove,
@@ -25,8 +26,8 @@ type Listener = () => void;
 // onFocusRequest handler branches on it instead of calling findById.
 // `durationSeconds`, when given, means "glide there over exactly this many
 // seconds" (a scripted Phase 6 scene pan, via camera.ts's tweenCamera) --
-// omitted, it's the original fast interactive fly-to (SearchBox,
-// InstructionBuilder's live preview), unchanged from before this existed.
+// omitted, it's the original fast interactive fly-to (InstructionBuilder's
+// live preview), unchanged from before this existed.
 type FocusListener = (id: string | null, durationSeconds?: number) => void;
 
 function createInteractionStore() {
@@ -113,11 +114,11 @@ function createInteractionStore() {
       }
       return results;
     },
-    // "Fly the camera to this entity" -- currently fired only by SearchBox's
-    // non-additive select. Decoupled from toggleEntity/selection on purpose
-    // (see focusListeners comment above): a caller can request a focus
-    // without also changing selection, and selection changes never
-    // implicitly trigger a focus.
+    // "Fly the camera to this entity" -- fired by InstructionBuilder's
+    // live preview and Phase 6 scene playback. Decoupled from
+    // toggleEntity/selection on purpose (see focusListeners comment above):
+    // a caller can request a focus without also changing selection, and
+    // selection changes never implicitly trigger a focus.
     onFocusRequest(listener: FocusListener): () => void {
       focusListeners.add(listener);
       return () => focusListeners.delete(listener);

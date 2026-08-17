@@ -5,13 +5,15 @@ import type { Entity } from "./entities";
 import { ANIMATION_OPTIONS, animationRequiresEntity, buildScene, type AnimationValue } from "./scenes";
 import { useSceneStore } from "./sceneStore";
 
-// Right-panel Instruction Builder (roadmap.md Phase 6, section 3). Unlike
-// SearchBox.tsx, this entity picker deliberately does NOT require clicking
-// the map -- per docs/phase_6_arch.md's "keep the map clean" decision, the
-// map is chosen *from* this form, not the other way around. This step only
-// tracks the picked entity locally (query -> dropdown -> pick); wiring a
-// pick here to interactionStore.requestFocus/toggleEntity for a live map
-// preview is the next 6.1 step, not yet done.
+// Right-panel Instruction Builder (roadmap.md Phase 6, section 3). This
+// entity picker deliberately does NOT require clicking the map -- per
+// docs/phase_6_arch.md's "keep the map clean" decision, the map is chosen
+// *from* this form, not the other way around (the old floating in-map
+// SearchBox was removed once this became the only path used to build a
+// story). Picking an entity drives a live map preview (see pickEntity
+// below); the map itself stays click/hover-selectable independently
+// (Phase 4, untouched), but
+// building a story never requires touching it.
 export function InstructionBuilder() {
   const { entities } = useInteractionStore();
   const addScene = useSceneStore((state) => state.addScene);
@@ -39,29 +41,38 @@ export function InstructionBuilder() {
     setSelectedEntity(null);
   };
 
-  // Same substring search interactionStore already exposes for SearchBox --
-  // no new search logic, just a new place (a form field, not a floating
-  // map overlay) to render its results.
+  // Same substring search interactionStore already exposes -- no new
+  // search logic, just a form field to render results in.
   const results = useMemo(() => interactionStore.search(query), [query, entities]);
 
-  // Live map preview: same non-additive select + fly-to pattern
-  // SearchBox.tsx uses (toggleEntity replaces the whole selection with just
-  // this entity, requestFocus flies the camera to it). This is the only
-  // path that drives the map now -- the map itself stays click/hover-
-  // selectable independently (Phase 4, untouched), but building a story
-  // never requires touching it.
+  // Live map preview: fast/interactive, never scripted -- duration only
+  // applies once a Scene is actually added to the timeline; previewing at
+  // that speed would make picking an entity feel sluggish for anything
+  // longer than a couple seconds. Mirrors buildScene's animation -> action
+  // mapping (scenes.ts) directly rather than routing through
+  // buildScene/dispatchScene, since dispatchScene now always threads the
+  // Scene's duration into a scripted glide (see the pan-duration fix) --
+  // reusing it here would make every pick glide for the chosen duration
+  // instead of confirming the pick instantly.
   //
-  // Known gap (flagged 6.1.a, still true here): every pick fires *both*
-  // toggleEntity and requestFocus regardless of the selected animation, so
-  // e.g. picking "Pan" (no highlight) still highlights the entity in the
-  // live preview -- misleading, since the Scene actually added won't
-  // highlight it. Deliberately left as-is for now (reverted a buildScene/
-  // dispatchScene-based fix here on request) -- revisit later.
+  // Fixed a real bug that lived here through 6.1.c: every pick used to
+  // fire *both* toggleEntity and requestFocus regardless of the selected
+  // animation, so picking "Pan" (no highlight) still showed a highlight in
+  // the live preview -- misleading, since the Scene actually added
+  // wouldn't highlight anything.
   const pickEntity = (entity: Entity) => {
     setSelectedEntity(entity);
     setQuery("");
-    interactionStore.toggleEntity(entity.id, false);
+    // Every animation pans to the picked entity for visual confirmation
+    // (plan-phase6-scenes-timeline.md decision #2) -- including
+    // "clearHighlight", even though the Scene it builds won't highlight
+    // anything (it clears whatever's currently highlighted, ignoring which
+    // entity was picked -- see actionRegistry.ts's clearHighlight
+    // handler). Only "highlight" additionally shows the highlight itself.
     interactionStore.requestFocus(entity.id);
+    if (animation === "highlight") {
+      interactionStore.toggleEntity(entity.id, false);
+    }
   };
 
   return (

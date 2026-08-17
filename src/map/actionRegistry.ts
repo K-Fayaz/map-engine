@@ -23,8 +23,8 @@ import type { Scene, SceneAction, CameraAction } from "./scenes";
 // Handlers never touch camera.ts or MapCanvas.tsx's camera state directly
 // -- that stays private to MapCanvas.tsx's effect closure by design. They
 // go through interactionStore's existing decoupled requestFocus/toggleEntity
-// channels instead, the same plumbing SearchBox.tsx and InstructionBuilder.tsx
-// already use for "pick an entity -> map reacts."
+// channels instead, the same plumbing InstructionBuilder.tsx's live preview
+// already uses for "pick an entity -> map reacts."
 export type ActionHandler = (
   params: Record<string, unknown>,
   durationSeconds: number,
@@ -55,10 +55,10 @@ export function dispatchScene(scene: Scene): void {
 }
 
 // "pan": entity -> fly/fit the camera to it over `durationSeconds` (reuses
-// the fly-to path SearchBox/InstructionBuilder trigger, but with a duration
-// now so it glides instead of snapping); no entity -> fit the whole world
-// (interactionStore.requestFocus(null, durationSeconds), see MapCanvas.tsx's
-// onFocusRequest null branch).
+// the fly-to path InstructionBuilder's live preview triggers, but with a
+// duration now so it glides instead of snapping); no entity -> fit the
+// whole world (interactionStore.requestFocus(null, durationSeconds), see
+// MapCanvas.tsx's onFocusRequest null branch).
 registerAction("pan", (params, durationSeconds) => {
   const targetEntityId = params.targetEntityId as string | undefined;
   interactionStore.requestFocus(targetEntityId ?? null, durationSeconds);

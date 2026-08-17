@@ -532,9 +532,9 @@ export function MapCanvas() {
             // (e.g. the Pacific), so stroking it on hover draws a
             // distracting border across most of the map instead of a small,
             // readable outline. Still fully selectable/highlightable via
-            // search (see SearchBox.tsx's requestFocus) and via a direct
-            // click (selectionGraphic above, unaffected by this) -- only the
-            // passive hover stroke is suppressed.
+            // the Instruction Builder's entity picker (requestFocus) and
+            // via a direct click (selectionGraphic above, unaffected by
+            // this) -- only the passive hover stroke is suppressed.
             if (hovered && hovered.type !== "sea") {
               strokeGeometry(hoverGraphic, hovered.geometry as AreaGeometry, HOVER_COLOR);
             }
@@ -689,9 +689,10 @@ export function MapCanvas() {
         // something else nearby (a country border, a lake edge), getting in
         // the way of selecting the thing actually intended. A click/hover
         // near a river now just falls through to whatever's underneath
-        // (land, or a sea fallback). Rivers stay fully selectable via search
-        // (SearchBox.tsx calls interactionStore.toggleEntity/requestFocus
-        // directly by id, bypassing this function entirely).
+        // (land, or a sea fallback). Rivers stay fully selectable via the
+        // Instruction Builder's entity picker (calls
+        // interactionStore.toggleEntity/requestFocus directly by id,
+        // bypassing this function entirely).
         function hitTestScreenPoint(screenX: number, screenY: number): Entity | undefined {
           // screenX/screenY are raw canvas-relative coordinates (e.g.
           // e.offsetX/Y); letterboxX/Y converts into content space, since
@@ -942,13 +943,13 @@ export function MapCanvas() {
 
         // Redraws the highlight overlay whenever the store's
         // selected/hovered entity changes -- from pointer events here, or
-        // from SearchBox selecting an entity by name. Not run per-frame:
-        // selection/hover change only on discrete events, not continuously,
-        // unlike applyCameraTransform above.
+        // from the Instruction Builder selecting an entity by name. Not run
+        // per-frame: selection/hover change only on discrete events, not
+        // continuously, unlike applyCameraTransform above.
         unsubscribeInteraction = interactionStore.subscribe(drawHighlights);
         drawHighlights();
 
-        // Fly the camera to fit whatever entity SearchBox/InstructionBuilder
+        // Fly the camera to fit whatever entity the Instruction Builder
         // (fast interactive fly-to) or Phase 6 scene playback (scripted,
         // durationSeconds given) just requested focus for. Decoupled from
         // drawHighlights above -- a focus request isn't itself a
