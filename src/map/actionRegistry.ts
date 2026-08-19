@@ -79,12 +79,17 @@ export function dispatchScene(scene: Scene, cameraStart?: CameraStart): void {
 // MapCanvas.tsx's onFocusRequest null branch).
 registerAction("pan", (params, durationSeconds, cameraStart) => {
   const targetEntityId = params.targetEntityId as string | undefined;
+  const zoomPercent = params.zoomPercent as number | undefined;
   if (cameraStart === "instant") {
     // No duration passed through -- the same fast interactive fly-to
     // InstructionBuilder's live preview uses, not a scripted glide.
-    interactionStore.requestFocus(targetEntityId ?? null);
+    interactionStore.requestFocus(targetEntityId ?? null, { zoomPercent });
   } else {
-    interactionStore.requestFocus(targetEntityId ?? null, durationSeconds, cameraStart === "world");
+    interactionStore.requestFocus(targetEntityId ?? null, {
+      durationSeconds,
+      fromWorldView: cameraStart === "world",
+      zoomPercent,
+    });
   }
 });
 

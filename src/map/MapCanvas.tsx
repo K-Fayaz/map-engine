@@ -81,10 +81,15 @@ const LAKE_BORDER_COLOR = 0x04697b;
 const RIVER_COLOR = LAKE_BORDER_COLOR;
 
 // How far past the default view (world exactly fills the screen) the user
-// can zoom in. Arbitrary reasonable cap for V1 -- there's no Phase 3
-// city/state detail yet to justify a specific number, revisit once that
-// exists.
-const MAX_ZOOM = 16;
+// can zoom in -- shared ceiling for manual wheel-zoom/drag *and* scripted
+// scene framing (focusOnBounds). Raised from the original V1 cap of 16:
+// that was nowhere near enough to tightly frame a small country -- e.g.
+// Singapore's ~0.5deg span works out (via this file's own
+// focusOnBounds/project math, WORLD_WIDTH=2000 world-units per 360deg) to
+// wanting zoom ~575 to fill 80% of a ~1600px-wide viewport, so it was
+// silently clamped to 16 regardless of Phase 6's zoomPercent field. 2000
+// covers entities meaningfully smaller than Singapore too.
+const MAX_ZOOM = 2000;
 
 // Fraction of the current->target gap closed per tick (~60fps), giving the
 // eased-zoom feel without full momentum/velocity physics.
@@ -956,15 +961,22 @@ export function MapCanvas() {
         // durationSeconds given) just requested focus for. Decoupled from
         // drawHighlights above -- a focus request isn't itself a
         // selection/hover state change.
-        unsubscribeFocus = interactionStore.onFocusRequest((id, durationSeconds, fromWorldView) => {
+        unsubscribeFocus = interactionStore.onFocusRequest((id, options) => {
+          const { durationSeconds, fromWorldView, zoomPercent } = options ?? {};
+          // 100 (default, i.e. no zoom field touched) leaves both branches
+          // below exactly as they were before this existed.
+          const zoomMultiplier = (zoomPercent ?? 100) / 100;
           // null = "focus the whole world" (Phase 6's target-less "pan"
           // action) -- the world-space bounds fit computation below doesn't
           // apply, since there's no entity to look up; zoom = MIN_ZOOM,
           // x/y = 0 already *is* the definition of the default world view
           // (clampCamera forces exactly this at zoom 1, see camera.ts).
+          // zoomMultiplier scales MIN_ZOOM itself here -- clampCamera's own
+          // [MIN_ZOOM, maxZoom] clamp means <=100% is a no-op (can't zoom
+          // out past the default world view), >100% zooms in from center.
           let newTarget: Camera;
           if (id === null) {
-            newTarget = clampCamera({ x: 0, y: 0, zoom: MIN_ZOOM }, viewW, viewH, MAX_ZOOM);
+            newTarget = clampCamera({ x: 0, y: 0, zoom: MIN_ZOOM * zoomMultiplier }, viewW, viewH, MAX_ZOOM);
           } else {
             const entity = findById(id);
             if (!entity) return;
@@ -984,6 +996,8 @@ export function MapCanvas() {
               baseScaleX,
               baseScaleY,
               MAX_ZOOM,
+              0.8,
+              zoomMultiplier,
             );
           }
           // Scripted: glide from wherever the camera is right now to

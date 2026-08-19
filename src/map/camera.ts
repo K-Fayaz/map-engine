@@ -131,6 +131,11 @@ const MIN_BOUNDS_SPAN = 0.5;
 // WorldBounds rather than raw lon/lat so this file stays free of a
 // render.ts/project() dependency -- callers project() an entity's lon/lat
 // boundingBox into world space first.
+// `zoomMultiplier` (default 1, i.e. Phase 6's "100%") scales the fitted zoom
+// before the MIN/MAX_ZOOM clamp -- >1 zooms in tighter than the plain
+// auto-fit, <1 zooms out. Still relative to this entity's own fit, not an
+// absolute zoom value, so the same multiplier frames a small island and a
+// large country each correctly, just scaled from its own baseline.
 export function focusOnBounds(
   bounds: WorldBounds,
   screenWidth: number,
@@ -139,13 +144,15 @@ export function focusOnBounds(
   baseScaleY: number,
   maxZoom: number,
   padding = 0.8,
+  zoomMultiplier = 1,
 ): Camera {
   const worldW = Math.max(bounds.maxX - bounds.minX, MIN_BOUNDS_SPAN);
   const worldH = Math.max(bounds.maxY - bounds.minY, MIN_BOUNDS_SPAN);
 
   const zoomX = (screenWidth * padding) / (worldW * baseScaleX);
   const zoomY = (screenHeight * padding) / (worldH * baseScaleY);
-  const zoom = Math.max(MIN_ZOOM, Math.min(zoomX, zoomY, maxZoom));
+  const fitZoom = Math.min(zoomX, zoomY);
+  const zoom = Math.max(MIN_ZOOM, Math.min(fitZoom * zoomMultiplier, maxZoom));
 
   const centerX = (bounds.minX + bounds.maxX) / 2;
   const centerY = (bounds.minY + bounds.maxY) / 2;

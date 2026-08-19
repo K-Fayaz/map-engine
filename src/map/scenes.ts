@@ -84,6 +84,7 @@ export function buildScene(
   entity: Entity | null,
   animation: AnimationValue,
   duration: number,
+  zoomPercent: number = 100,
 ): Scene | null {
   if (animationRequiresEntity(animation) && !entity) return null;
 
@@ -91,7 +92,10 @@ export function buildScene(
   let camera: CameraAction | undefined;
 
   if (animation === "pan" || animation === "highlight") {
-    camera = { type: "pan", params: entity ? { targetEntityId: entity.id } : {} };
+    camera = {
+      type: "pan",
+      params: { ...(entity ? { targetEntityId: entity.id } : {}), zoomPercent },
+    };
   }
   if (animation === "highlight") {
     actions.push({ type: "highlight", params: { entityId: entity!.id } });
@@ -126,6 +130,17 @@ export function sceneAnimationValue(scene: Scene): AnimationValue {
   if (hasHighlight) return "highlight";
   if (scene.camera?.type === "pan") return "pan";
   return "clearHighlight";
+}
+
+// Zoom tightness multiplier for the scene's camera pan, as a percentage --
+// 100 (default) is today's plain auto-fit framing, unaffected. Read back
+// out of scene.camera.params the same reverse-mapping way
+// sceneAnimationValue is, for the Timeline block display and 6.3's
+// edit-in-place form repopulation. Falls back to 100 for scenes with no
+// camera action (e.g. plain "Clear Highlight") -- there's no pan to scale.
+export function sceneZoomPercent(scene: Scene): number {
+  const value = scene.camera?.params.zoomPercent;
+  return typeof value === "number" ? value : 100;
 }
 
 export function describeAnimation(scene: Scene): string {

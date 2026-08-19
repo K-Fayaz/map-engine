@@ -5,6 +5,143 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-19 — Bug fix: MAX_ZOOM (16) far too low to frame small countries
+
+### Summary
+Found while the user was verifying the zoom % feature above in-browser: a
+scene panning to Singapore at 300% looked identical to 100%, no visible
+zoom-in at all. Root cause was one level deeper than the new feature --
+`MAX_ZOOM = 16` (`MapCanvas.tsx`), the shared ceiling for every zoom path
+(manual wheel/drag, resize-reclamp, both scene pan branches), was already
+far too low for a small country's plain 100% auto-fit, so 300% clamped to
+the exact same value as 100% and looked unchanged. Verified the actual
+number, not just asserted it: this file's own `WORLD_WIDTH = 2000`
+world-units per 360deg (`render.ts`) means Singapore's ~0.5deg span is only
+~2.8 world-units wide -- `focusOnBounds`'s own fit formula wants zoom ~575
+to fill 80% of a ~1600px viewport with that, nowhere close to 16. Not a bug
+in this session's zoomPercent/toggle work -- that code was applying its
+multiplier correctly, just against a ceiling that made the multiplier
+irrelevant for anything smaller than a mid-sized country.
+
+### Changes
+
+**`MapCanvas.tsx`**
+- `MAX_ZOOM` raised from `16` to `2000` -- covers entities meaningfully
+  smaller than Singapore too, per the calculation above. Single constant,
+  shared by every existing consumer (wheel-zoom, drag-clamp, resize-
+  reclamp, `focusOnBounds` for both entity and world pans) -- no other code
+  compares against the literal value 16, confirmed by checking every call
+  site before changing it, so this is a pure ceiling raise, not a behavior
+  branch that needed updating elsewhere.
+
+### Decisions
+- **One shared ceiling, not a separate cap for manual vs. scripted zoom.**
+  Raising `MAX_ZOOM` also lets manual wheel-zoom go that far in by hand,
+  not just scripted scenes -- flagged to the user as a deliberate side
+  effect (not hidden) rather than splitting into two constants, since
+  letting someone manually inspect a tiny country just as closely as a
+  scripted scene can seems like the more consistent behavior, not a
+  regression.
+
+### Deferred / not yet implemented
+- User is verifying this in-browser directly -- not yet independently
+  confirmed via screenshot/automation in this session.
+
+---
+
+## 2026-08-19 — Per-scene zoom % control
+
+### Summary
+User-requested: zoom was previously 100% automatic -- `camera.ts`'s
+`focusOnBounds` always computed whatever zoom tightly fits an entity's
+bounding box (padding 0.8), clamped to `[MIN_ZOOM, MAX_ZOOM]`, with no user
+input at all. Added a per-scene "Zoom (%)" field in the Instruction Builder.
+Design discussion resolved three questions before coding: what the
+percentage means (a *tightness multiplier* on top of the existing auto-fit,
+not an absolute zoom -- 100% = unchanged default, 150% = 1.5x tighter, 50%
+= zoomed out, still scaled relative to whatever entity is framed, not a
+fixed camera zoom value); whether it should also apply to a world pan
+(yes, uniformly, no special-casing -- MIN_ZOOM is world pan's equivalent
+"baseline" the same way auto-fit-zoom is an entity pan's); and whether it
+shows on the Timeline block (yes, next to duration).
+
+### Changes
+
+**`scenes.ts`**
+- `buildScene` gains a 4th param `zoomPercent: number = 100`, stored in the
+  scene's `camera.params.zoomPercent` (only meaningful alongside `"pan"`,
+  same as `targetEntityId`).
+- New `sceneZoomPercent(scene)` -- reverse-mapping reader (falls back to
+  100 for scenes with no camera/pan), same pattern `sceneAnimationValue`
+  already uses. Powers both the Timeline block label and 6.3's edit-in-place
+  form repopulation.
+
+**`camera.ts`**
+- `focusOnBounds` gains a `zoomMultiplier = 1` param, applied to the fitted
+  zoom before the existing `[MIN_ZOOM, maxZoom]` clamp:
+  `zoom = clamp(fitZoom * zoomMultiplier, MIN_ZOOM, maxZoom)`. Still
+  entity-relative -- the same multiplier frames a small island and a large
+  country each correctly, just scaled from that entity's own auto-fit.
+
+**`interactionStore.ts`**
+- `requestFocus`/`FocusListener` refactored from three stacked positional
+  params to a single `FocusOptions` object
+  (`{durationSeconds?, fromWorldView?, zoomPercent?}`) -- done now rather
+  than stacking a 4th positional param, since only two call sites existed
+  (`InstructionBuilder.tsx`, `actionRegistry.ts`'s `pan` handler), making
+  the refactor low-risk.
+
+**`actionRegistry.ts`**
+- `pan` handler reads `params.zoomPercent`, forwards it through
+  `requestFocus`'s new options object in both its `"instant"` and scripted-
+  glide branches.
+
+**`MapCanvas.tsx`**
+- `onFocusRequest`'s callback destructures `{durationSeconds, fromWorldView,
+  zoomPercent}` from the options object; computes `zoomMultiplier =
+  (zoomPercent ?? 100) / 100` once and applies it to *both* branches --
+  entity pans pass it into `focusOnBounds`; world pans (`id === null`) apply
+  it directly to `MIN_ZOOM` before `clampCamera`, so world-pan zoom is
+  usable too (>100% zooms in from the globe's center; <=100% is a no-op
+  since `MIN_ZOOM` is already the hard floor -- an existing, correct
+  constraint, not a new gap this introduces).
+
+**`InstructionBuilder.tsx`**
+- New "Zoom (%)" number input (default 100, min 10, step 10) next to
+  Duration -- included in `buildScene`, fed into the live-preview
+  `pickEntity`'s `requestFocus` call (so picking an entity previews at the
+  chosen zoom, not always the plain auto-fit), and re-synced from
+  `sceneZoomPercent` in the same `editingSceneId`-keyed effect that already
+  repopulates animation/duration for 6.3's edit-in-place flow.
+
+**`Timeline.tsx`**
+- Block label now reads `"{duration}s · {zoomPercent}%"` instead of just
+  duration.
+
+### Decisions
+- **Tightness multiplier relative to auto-fit, not an absolute zoom.**
+  Explicitly chosen over "0-100% maps to MIN_ZOOM-MAX_ZOOM directly" --
+  an absolute mapping would ignore entity size entirely (the same
+  percentage could crop a large country or leave a tiny island minuscule),
+  whereas a multiplier on the existing auto-fit stays meaningful regardless
+  of what's being framed.
+- **Applies uniformly to world pans too, no special-casing.** Matches how
+  "pan" already unifies entity-pan and world-pan into one action instead of
+  two branches with divergent behavior. The floor-at-MIN_ZOOM asymmetry
+  (can zoom in past world view, can't zoom out past it) is inherent to what
+  "world view" already means, not a new wrinkle.
+- **`requestFocus` switched to an options object now, not a 4th positional
+  param.** Judgment call flagged to the user during planning -- with only
+  two call sites, low risk to refactor now rather than let positional args
+  keep stacking.
+
+### Deferred / not yet implemented
+- Not yet verified in-browser -- `tsc --noEmit` clean, correct by
+  inspection, actual manual verification (zoom in/out at various
+  percentages, both entity and world pans) still pending.
+
+---
+
 ## 2026-08-19 — Manual toggle: show/hide state borders on zoom
 
 ### Summary

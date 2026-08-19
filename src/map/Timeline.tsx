@@ -2,7 +2,7 @@ import { useRef } from "react";
 import "./Timeline.css";
 import { useInteractionStore } from "./interactionStore";
 import { useSceneStore } from "./sceneStore";
-import { describeAnimation } from "./scenes";
+import { describeAnimation, sceneZoomPercent } from "./scenes";
 import { TimelineRuler } from "./TimelineRuler";
 import { PIXELS_PER_SECOND } from "./timelineLayout";
 
@@ -107,7 +107,9 @@ export function Timeline() {
                 </button>
                 <span className="timeline-entity">{nameForScene(scene.targetEntityId)}</span>
                 <span className="timeline-animation">{describeAnimation(scene)}</span>
-                <span className="timeline-duration">{scene.duration}s</span>
+                <span className="timeline-duration">
+                  {scene.duration}s · {sceneZoomPercent(scene)}%
+                </span>
                 <div
                   className="timeline-resize-handle"
                   onPointerDown={(e) => startResize(e, scene.id, scene.duration)}

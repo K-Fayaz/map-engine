@@ -40,7 +40,18 @@ type Listener = () => void;
 // currently sits -- used for a story's first scene when the user opts into
 // a cinematic world->scene1 open (sceneStore.ts's startFromWorldView),
 // rather than the glide silently depending on leftover camera position.
-type FocusListener = (id: string | null, durationSeconds?: number, fromWorldView?: boolean) => void;
+// `zoomPercent` (default 100) scales how tight/loose the resulting framing
+// is versus the plain auto-fit -- camera.ts's focusOnBounds zoomMultiplier,
+// or (for id === null) MIN_ZOOM itself for a world pan. Bundled into an
+// options object rather than a further positional param -- this is the
+// third one stacked on here, past the point where positional args stay
+// readable at call sites.
+export interface FocusOptions {
+  durationSeconds?: number;
+  fromWorldView?: boolean;
+  zoomPercent?: number;
+}
+type FocusListener = (id: string | null, options?: FocusOptions) => void;
 
 function createInteractionStore() {
   let state: InteractionState = {
@@ -141,8 +152,8 @@ function createInteractionStore() {
       focusListeners.add(listener);
       return () => focusListeners.delete(listener);
     },
-    requestFocus(id: string | null, durationSeconds?: number, fromWorldView?: boolean) {
-      for (const listener of focusListeners) listener(id, durationSeconds, fromWorldView);
+    requestFocus(id: string | null, options?: FocusOptions) {
+      for (const listener of focusListeners) listener(id, options);
     },
   };
 }

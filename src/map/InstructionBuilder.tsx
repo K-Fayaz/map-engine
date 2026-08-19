@@ -7,6 +7,7 @@ import {
   animationRequiresEntity,
   buildScene,
   sceneAnimationValue,
+  sceneZoomPercent,
   type AnimationValue,
 } from "./scenes";
 import { useSceneStore } from "./sceneStore";
@@ -33,6 +34,10 @@ export function InstructionBuilder() {
   // Seconds. Plain local state, becomes part of the Scene "Add to Timeline"
   // creates below.
   const [duration, setDuration] = useState(3);
+  // Percent, 100 = plain auto-fit framing (unchanged from before this
+  // field existed). Tightness multiplier on top of the auto-fit, not an
+  // absolute zoom -- see camera.ts's focusOnBounds zoomMultiplier.
+  const [zoomPercent, setZoomPercent] = useState(100);
 
   // 6.3: clicking a scene block in Timeline.tsx sets editingSceneId, which
   // this form re-populates from -- only depends on editingSceneId itself
@@ -46,6 +51,7 @@ export function InstructionBuilder() {
     if (!scene) return;
     setAnimation(sceneAnimationValue(scene));
     setDuration(scene.duration);
+    setZoomPercent(sceneZoomPercent(scene));
     setSelectedEntity(
       scene.targetEntityId ? (entities.find((e) => e.id === scene.targetEntityId) ?? null) : null,
     );
@@ -67,7 +73,7 @@ export function InstructionBuilder() {
   // fully resets/exits edit mode afterward rather than carrying anything
   // over -- editing is a one-off correction, not a repeated pattern.
   const submit = () => {
-    const scene = buildScene(selectedEntity, animation, duration);
+    const scene = buildScene(selectedEntity, animation, duration, zoomPercent);
     if (!scene) return;
     if (editingSceneId) {
       updateScene(editingSceneId, scene);
@@ -85,6 +91,7 @@ export function InstructionBuilder() {
     setQuery("");
     setAnimation(ANIMATION_OPTIONS[0].value);
     setDuration(3);
+    setZoomPercent(100);
   };
 
   // Same substring search interactionStore already exposes -- no new
@@ -115,7 +122,7 @@ export function InstructionBuilder() {
     // anything (it clears whatever's currently highlighted, ignoring which
     // entity was picked -- see actionRegistry.ts's clearHighlight
     // handler). Only "highlight" additionally shows the highlight itself.
-    interactionStore.requestFocus(entity.id);
+    interactionStore.requestFocus(entity.id, { zoomPercent });
     if (animation === "highlight") {
       interactionStore.toggleEntity(entity.id, false);
     }
@@ -197,6 +204,17 @@ export function InstructionBuilder() {
           step={0.5}
           value={duration}
           onChange={(e) => setDuration(Number(e.target.value))}
+          className="ib-input"
+        />
+      </div>
+      <div>
+        <span className="ib-field-label">Zoom (%)</span>
+        <input
+          type="number"
+          min={10}
+          step={10}
+          value={zoomPercent}
+          onChange={(e) => setZoomPercent(Number(e.target.value))}
           className="ib-input"
         />
       </div>
