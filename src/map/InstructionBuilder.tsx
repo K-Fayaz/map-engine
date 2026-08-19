@@ -21,7 +21,7 @@ import { useSceneStore } from "./sceneStore";
 // (Phase 4, untouched), but
 // building a story never requires touching it.
 export function InstructionBuilder() {
-  const { entities } = useInteractionStore();
+  const { entities, showStateBorders } = useInteractionStore();
   const scenes = useSceneStore((state) => state.scenes);
   const addScene = useSceneStore((state) => state.addScene);
   const editingSceneId = useSceneStore((state) => state.editingSceneId);
@@ -123,6 +123,17 @@ export function InstructionBuilder() {
 
   return (
     <div className="zone">
+      {/* Manual override for state-border visibility on zoom -- when off,
+          states also stop being clickable/hoverable (interactionStore.ts's
+          showStateBorders, read by MapCanvas.tsx's hitTestScreenPoint). */}
+      <label className="ib-checkbox-row">
+        <input
+          type="checkbox"
+          checked={showStateBorders}
+          onChange={(e) => interactionStore.setShowStateBorders(e.target.checked)}
+        />
+        Show state borders on zoom
+      </label>
       <div>
         <span className="ib-field-label">Animation</span>
         <select

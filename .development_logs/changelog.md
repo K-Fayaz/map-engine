@@ -5,6 +5,81 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-19 — Manual toggle: show/hide state borders on zoom
+
+### Summary
+New Instruction Builder control, user-requested: state (sub-country) border
+visibility was purely automatic before this (zoom above
+`STATE_ZOOM_THRESHOLD` = shown, at/below = hidden -- `MapCanvas.tsx`'s
+`applyCameraTransform`, recomputed every frame, no manual override existed).
+Added a checkbox that ANDs with that existing zoom check, so it never
+changes default behavior unless a user turns it off. Two scope questions
+resolved with the user before coding: state *labels* don't need separate
+handling since `VITE_SHOW_LABELS=false` in `.env` already means no label
+sprites are built at all today, regardless of this toggle; and turning
+borders off should also disable clicking/hovering states, not just hide
+them visually (confirmed explicitly -- these were previously independent
+code paths, `hitTestScreenPoint` has its own separate zoom check that
+doesn't read `.visible`).
+
+### Changes
+
+**`interactionStore.ts`**
+- New `showStateBorders: boolean` (default `true`, so nothing changes until
+  a user opts out) added to the regular state/`emit()` mechanism (not the
+  separate one-shot `focusListeners` channel -- this is persistent state a
+  form control and MapCanvas both need to read, same category as
+  `selectedEntityIds`/`hoveredEntityId`). New `setShowStateBorders(show)`.
+
+**`MapCanvas.tsx`**
+- `applyCameraTransform()`: after the existing `setVisibleAboveZoom(statesLayer,
+  ...)` call, an added `if (!interactionStore.getState().showStateBorders)
+  statesLayer.visible = false;` -- forces it off regardless of zoom when the
+  toggle is off, leaves the zoom-based result alone otherwise.
+- `hitTestScreenPoint()`: the `stateEntities` vs `borderEntities` candidate
+  selection now also reads `interactionStore.getState().showStateBorders` --
+  when off, hit-testing falls through to country/border-level candidates
+  even while zoomed in past the state threshold, so states become
+  unclickable/unhoverable exactly when their borders are hidden, not just
+  invisible.
+- Read via `interactionStore.getState()` directly inside the imperative Pixi
+  closure (both call sites already run every frame/every hit-test call) --
+  no new subscription needed, same pattern already used for other per-frame
+  reads in this file.
+
+**`InstructionBuilder.tsx` / `.css`**
+- New "Show state borders on zoom" checkbox, calling
+  `interactionStore.setShowStateBorders` directly -- same direct-singleton-
+  call pattern `pickEntity` already uses, not local `useState` (MapCanvas
+  needs to react to it, so it has to live in the shared store).
+
+### Decisions
+- **A live store field, not the existing `SHOW_LABELS`/`SHOW_RIVERS`
+  build-time env-flag pattern.** Those are compile-time only (need a dev
+  server restart), explicitly documented as "not a live in-app toggle" --
+  wrong shape for something a user needs to flip at runtime from the form.
+- **Disabling hit-testing, not just visibility, per explicit user
+  confirmation.** The two were independent before this (`.visible` never
+  affected `hitTestScreenPoint`'s own zoom check) -- fixed by reading the
+  same store flag in both places rather than trying to derive one from the
+  other.
+- **State labels needed no separate handling.** `VITE_SHOW_LABELS=false` in
+  the repo's `.env` already means no state (or country) label sprites exist
+  at all right now, independent of this toggle -- confirmed with the user
+  rather than assumed, since a label-visibility interaction was a real
+  question until checked.
+
+### Deferred / not yet implemented
+- Not yet verified in-browser -- `tsc --noEmit` clean, correct by
+  inspection, actual manual toggle-and-click verification still pending.
+- `declutterStates()` still runs its viewport-cull/attach logic even while
+  `showStateBorders` is off and zoom is above threshold (only its early
+  `zoom <= STATE_ZOOM_THRESHOLD` return is unaffected) -- harmless since
+  `statesLayer.visible = false` means nothing renders either way, just a
+  small amount of wasted per-frame work, not gated for now.
+
+---
+
 ## 2026-08-19 — Playback bug fix: deterministic camera start for a fresh Play
 
 ### Summary

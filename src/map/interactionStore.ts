@@ -18,6 +18,13 @@ interface InteractionState {
   // MapCanvas.tsx renders every id in here, not just one.
   selectedEntityIds: Set<string>;
   hoveredEntityId: string | null;
+  // Manual override for state (sub-country) border visibility, set from the
+  // Instruction Builder. `true` (default) leaves today's behavior alone --
+  // state borders still only ever appear above STATE_ZOOM_THRESHOLD.
+  // `false` forces them off regardless of zoom, and also makes states
+  // unclickable/unhoverable (MapCanvas.tsx's hitTestScreenPoint reads this
+  // too), not just invisible.
+  showStateBorders: boolean;
 }
 
 type Listener = () => void;
@@ -40,6 +47,7 @@ function createInteractionStore() {
     entities: [],
     selectedEntityIds: new Set(),
     hoveredEntityId: null,
+    showStateBorders: true,
   };
   const listeners = new Set<Listener>();
   // Separate from `listeners`/`emit` above -- a focus request (e.g. "fly the
@@ -103,6 +111,11 @@ function createInteractionStore() {
     hoverEntity(id: string | null) {
       if (state.hoveredEntityId === id) return;
       state = { ...state, hoveredEntityId: id };
+      emit();
+    },
+    setShowStateBorders(show: boolean) {
+      if (state.showStateBorders === show) return;
+      state = { ...state, showStateBorders: show };
       emit();
     },
     // Case-insensitive substring match over entity names, capped at `limit`.

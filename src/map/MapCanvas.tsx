@@ -654,6 +654,7 @@ export function MapCanvas() {
           worldContainer.position.set(current.x + letterboxX, current.y + letterboxY);
           worldContainer.scale.set(baseScaleX * current.zoom, baseScaleY * current.zoom);
           setVisibleAboveZoom(statesLayer, current.zoom, STATE_ZOOM_THRESHOLD);
+          if (!interactionStore.getState().showStateBorders) statesLayer.visible = false;
           setVisibleAboveZoom(stateLabelsLayer, current.zoom, STATE_ZOOM_THRESHOLD);
           setVisibleAtOrBelowZoom(countryLabelsLayer, current.zoom, STATE_ZOOM_THRESHOLD);
           counterScaleLabelLayer(countryLabelsLayer, baseScaleX, baseScaleY, current.zoom);
@@ -708,7 +709,8 @@ export function MapCanvas() {
           const [lon, lat] = unproject(wx, wy);
           const lakeHit = findEntityAt(lakeEntities, lon, lat);
           if (lakeHit) return lakeHit;
-          const candidates = current.zoom > STATE_ZOOM_THRESHOLD ? stateEntities : borderEntities;
+          const showStates = current.zoom > STATE_ZOOM_THRESHOLD && interactionStore.getState().showStateBorders;
+          const candidates = showStates ? stateEntities : borderEntities;
           const landHit = findEntityAt(candidates, lon, lat);
           if (landHit) return landHit;
           return findEntityAt(seaEntities, lon, lat);
