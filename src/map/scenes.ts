@@ -109,20 +109,27 @@ export function buildScene(
   };
 }
 
-// Reverse of buildScene's decomposition, for display (the Timeline list).
-// Reconstructs a human-readable label from a Scene's actions/camera rather
-// than storing the original AnimationValue on the Scene itself -- the Scene
-// stores what happens (roadmap.md section 14's "store what the user wants
-// to happen, not raw renderer state"), not which dropdown option produced
-// it, so this is what turns that back into something readable.
-export function describeAnimation(scene: Scene): string {
-  const hasPan = scene.camera?.type === "pan";
+// Reverse of buildScene's decomposition -- both for display (the Timeline
+// list) and, since 6.3's edit-in-place flow, for re-populating the
+// Instruction Builder's animation dropdown when a scene is clicked to
+// edit. Reconstructs which dropdown option produced a Scene from its
+// actual actions/camera rather than storing the original AnimationValue on
+// the Scene itself -- the Scene stores what happens (roadmap.md section
+// 14's "store what the user wants to happen, not raw renderer state"), not
+// which dropdown option produced it.
+export function sceneAnimationValue(scene: Scene): AnimationValue {
   const hasHighlight = scene.actions.some((action) => action.type === "highlight");
-  // "highlight" always attaches a camera.pan now (see buildScene), so
-  // hasPan && hasHighlight is just "Highlight" -- there's no longer a
-  // distinct "Pan + Highlight" option it could mean instead.
-  if (hasHighlight) return "Highlight";
-  if (hasPan) return "Pan";
-  if (scene.actions.some((action) => action.type === "clearHighlight")) return "Clear Highlight";
-  return "—";
+  // "highlight" always attaches a camera.pan now (see buildScene), so a
+  // scene with both a camera.pan and a highlight action is just
+  // "highlight" -- there's no longer a distinct "Pan + Highlight" value it
+  // could mean instead.
+  if (hasHighlight) return "highlight";
+  if (scene.camera?.type === "pan") return "pan";
+  return "clearHighlight";
+}
+
+export function describeAnimation(scene: Scene): string {
+  if (!scene.camera && scene.actions.length === 0) return "—";
+  const value = sceneAnimationValue(scene);
+  return ANIMATION_OPTIONS.find((option) => option.value === value)?.label ?? "—";
 }

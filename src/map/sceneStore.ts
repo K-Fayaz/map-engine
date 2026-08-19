@@ -22,6 +22,18 @@ interface SceneStore {
   addScene: (scene: Scene) => void;
   resizeScene: (id: string, duration: number) => void;
   deleteScene: (id: string) => void;
+  jumpToScene: (index: number) => void;
+  // 6.3: which scene, if any, the Instruction Builder is currently
+  // editing in place (vs. building a brand-new one to append). Lives here
+  // rather than as InstructionBuilder-local state so clicking a scene
+  // block in Timeline.tsx can drive it -- the two components don't
+  // otherwise share state.
+  editingSceneId: string | null;
+  // Takes a full Scene (including its own, throwaway generated id from
+  // buildScene) purely so callers don't have to destructure it away --
+  // the id param here always wins, `scene.id` is ignored.
+  updateScene: (id: string, scene: Scene) => void;
+  stopEditingScene: () => void;
   currentSceneIndex: number | null;
   isPlaying: boolean;
   play: () => void;
@@ -82,8 +94,36 @@ export const useSceneStore = create<SceneStore>((set, get) => {
         scenes: state.scenes.filter((scene) => scene.id !== id),
         isPlaying: false,
         currentSceneIndex: null,
+        // Deleting the scene currently being edited would otherwise leave
+        // editingSceneId pointing at nothing -- drop out of edit mode too.
+        editingSceneId: state.editingSceneId === id ? null : state.editingSceneId,
       }));
     },
+    // 6.3: jumps straight to scene N's camera+highlight state via the same
+    // dispatchScene primitive playFrom uses -- no transition through
+    // scenes in between, and no hold timer armed (this is a one-shot
+    // jump, not "start playing from here"). Stops playback if any was
+    // running, same reasoning as deleteScene: a manual jump while a hold
+    // timer is armed for a *different* scene would otherwise leave that
+    // stale timer firing later and clobbering the jump.
+    // Also enters edit mode for the clicked scene (editingSceneId) --
+    // clicking a block is the only way jumpToScene is triggered today, and
+    // per this session's request the two are meant to happen together
+    // (preview on the map + populate the form to edit it).
+    jumpToScene: (index) => {
+      clearHoldTimer();
+      const { scenes } = get();
+      if (index < 0 || index >= scenes.length) return;
+      dispatchScene(scenes[index]);
+      set({ isPlaying: false, currentSceneIndex: index, editingSceneId: scenes[index].id });
+    },
+    editingSceneId: null,
+    updateScene: (id, scene) =>
+      set((state) => ({
+        scenes: state.scenes.map((s) => (s.id === id ? { ...scene, id } : s)),
+        editingSceneId: null,
+      })),
+    stopEditingScene: () => set({ editingSceneId: null }),
     currentSceneIndex: null,
     isPlaying: false,
     // No transition/hold split (roadmap.md section 16, explicitly deferred)

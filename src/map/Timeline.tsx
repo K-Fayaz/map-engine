@@ -18,8 +18,11 @@ export function Timeline() {
   const pause = useSceneStore((state) => state.pause);
   const resizeScene = useSceneStore((state) => state.resizeScene);
   const deleteScene = useSceneStore((state) => state.deleteScene);
+  const jumpToScene = useSceneStore((state) => state.jumpToScene);
   const { entities } = useInteractionStore();
-  const totalDurationSeconds = scenes.reduce((sum, scene) => sum + scene.duration, 0);
+  // Floor of 60s so the ruler still shows a full minute of ticks with no
+  // scenes yet, instead of collapsing to nothing.
+  const totalDurationSeconds = Math.max(60, scenes.reduce((sum, scene) => sum + scene.duration, 0));
 
   // Drag-to-resize state lives in a ref, not React state -- it only needs
   // to be read inside pointer-move/up handlers, never rendered off of, so
@@ -63,11 +66,10 @@ export function Timeline() {
       >
         {isPlaying ? "Pause" : "Play"}
       </button>
+      <TimelineRuler totalDurationSeconds={totalDurationSeconds} />
       {scenes.length === 0 ? (
         <div className="timeline-empty">No scenes yet -- build one in the Instruction Builder.</div>
       ) : (
-        <>
-          <TimelineRuler totalDurationSeconds={totalDurationSeconds} />
           <ol className="timeline-track">
             {scenes.map((scene, index) => (
               <li
@@ -76,11 +78,15 @@ export function Timeline() {
                   index === currentSceneIndex ? "timeline-block timeline-block-active" : "timeline-block"
                 }
                 style={{ width: scene.duration * PIXELS_PER_SECOND }}
+                onClick={() => jumpToScene(index)}
               >
                 <button
                   type="button"
                   className="timeline-delete-btn"
-                  onClick={() => deleteScene(scene.id)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    deleteScene(scene.id);
+                  }}
                   aria-label={`Delete ${nameForScene(scene.targetEntityId)} scene`}
                 >
                   ×
@@ -93,11 +99,11 @@ export function Timeline() {
                   onPointerDown={(e) => startResize(e, scene.id, scene.duration)}
                   onPointerMove={onResizeMove}
                   onPointerUp={endResize}
+                  onClick={(e) => e.stopPropagation()}
                 />
               </li>
             ))}
           </ol>
-        </>
       )}
     </div>
   );

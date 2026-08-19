@@ -5,6 +5,134 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-19 — Phase 6.2 (visual timeline) + 6.3.1 (scene selection); 6.3.2/6.3.3 built then pulled
+
+### Summary
+Built out the rest of 6.2 (ruler, duration-proportional scene block track,
+drag-resize, delete) and started 6.3 (roadmap.md step 8 / scene selection-
+scrub sync). 6.3.1 (click a scene to jump straight to its state) landed
+along with an added scene-editing flow (clicking a scene also populates
+the Instruction Builder to edit it in place, with Update/Cancel). 6.3.2
+(a playhead marker) and 6.3.3 (drag-to-scrub) were then built, found to
+have a real gap under testing, and deliberately removed again -- kept only
+6.3.1 and the edit-in-place flow. `tsc --noEmit` clean and verified
+in-browser at each step below.
+
+### Changes
+
+**`timelineLayout.ts` (new), `TimelineRuler.tsx`/`.css` (new)**
+- `PIXELS_PER_SECOND` (40) shared scale constant, `pickTickInterval` (picks
+  a "nice" interval -- 1/2/5/10/15/30/60/120/300/600s -- so a ruler always
+  shows roughly 10 ticks regardless of total duration), `formatTimestamp`
+  (m:ss). `TimelineRuler` renders ticks from 0 to one interval past the
+  total duration. Verified: a 20s timeline showed 2s ticks, a 60s timeline
+  showed 10s ticks with correct "1:00" rollover. Always rendered (floor of
+  60s when there are no scenes yet) rather than only appearing once a
+  scene exists.
+
+**`Timeline.tsx` / `Timeline.css`**
+- Scene list converted from a flex-wrapped list to `.timeline-track`/
+  `.timeline-block` -- edge-to-edge blocks (no gap) each sized
+  `duration * PIXELS_PER_SECOND`, so block widths land exactly on the
+  ruler's ticks above them.
+- Delete: a `×` button per block, straddling the block's top border
+  (top-right corner, per user request on exact placement/size), calling a
+  new `sceneStore.deleteScene`.
+- Drag-to-resize: a 6px hit strip on each block's right edge, pointer-
+  capture based (same pattern as below), dragging changes that scene's
+  duration live via a new `sceneStore.resizeScene`.
+- Click-to-select (6.3.1): clicking a block calls `sceneStore.jumpToScene`,
+  which dispatches that scene's camera+highlight state directly (no
+  transition through scenes in between) and marks it active
+  (`.timeline-block-active`).
+
+**`sceneStore.ts`**
+- `resizeScene(id, duration)` -- clamps to a 0.5s floor.
+- `deleteScene(id)` -- unconditionally resets playback (clears the hold
+  timer, `isPlaying: false`, `currentSceneIndex: null`) rather than trying
+  to adjust the index for the array shift; also drops `editingSceneId` if
+  the deleted scene was the one being edited. Same reasoning as every
+  other structural-edit action in this store: adjusting indices to
+  preserve position through a shift is fiddly and easy to get subtly
+  wrong, so a full reset is the deliberately simple, safe choice.
+- `jumpToScene(index)` -- dispatches the scene directly, stops playback,
+  sets `currentSceneIndex`, and (see below) `editingSceneId`.
+- `editingSceneId`, `updateScene(id, scene)`, `stopEditingScene()` -- the
+  scene-editing flow. `jumpToScene` sets `editingSceneId` to the clicked
+  scene's id (the two happen together: preview on the map + populate the
+  form), `updateScene` replaces that scene in place (keeping its original
+  id, discarding the throwaway id `buildScene` generates fresh each call)
+  and exits edit mode.
+
+**`scenes.ts`**
+- New `sceneAnimationValue(scene)`, extracted out of `describeAnimation`'s
+  detection logic -- reverse-maps a Scene back to the `AnimationValue` that
+  built it, needed so the edit flow can re-populate the Animation dropdown
+  correctly. `describeAnimation` now just looks up that value's label.
+
+**`InstructionBuilder.tsx` / `.css`**
+- A `useEffect` keyed on `editingSceneId` (not `scenes`/`entities`, so it
+  only re-syncs when a *different* scene is picked to edit, not on every
+  unrelated store change) re-populates entity/animation/duration from the
+  scene being edited.
+- Submit button reads "Update Timeline" (calls `updateScene`) instead of
+  "Add to Timeline" while editing; a "Cancel" button appears alongside it
+  (`stopEditingScene` + resets the form) -- new `.ib-btn-row`/
+  `.ib-cancel-btn`.
+- Verified in-browser: clicking a block jumps the map, highlights the
+  block, populates the form, and shows Update/Cancel; editing the duration
+  and clicking Update Timeline changed that scene's duration in place
+  (confirmed both in the block's label and via a fresh click showing the
+  updated value) without adding a duplicate scene.
+
+### Built, then removed again: 6.3.2 (playhead marker) and 6.3.3 (scrub)
+- Added a draggable playhead marker (`sceneStore.playheadSeconds`,
+  `scrubTo`, a wider invisible hitbox around the visible 2px line) that
+  moved continuously as you dragged it, re-dispatching the scene under the
+  cursor whenever the drag crossed a scene boundary. Verified via
+  synthetic pointer events (with proper waits for React to flush) that the
+  boundary-crossing mechanism itself worked correctly -- dragging from 3s
+  to 7s (both inside one scene) kept that scene active with no redundant
+  redispatch, dragging to 12s (into the next scene's span) correctly
+  switched the active scene and dispatched it.
+- **The real gap, found via user testing, not caught by the synthetic
+  test above**: scrubbing *within* a single scene's own span does nothing
+  to the camera, even for a Pan scene where the camera position is
+  genuinely time-dependent (per the earlier scripted-pan-duration work).
+  `scrubTo` only re-dispatches on a boundary crossing; even if it
+  re-dispatched on every pixel, `dispatchScene` starts a fresh *real-time*
+  glide from wherever the camera happens to be, which is playback
+  behavior, not a seek -- there's no way to jump straight to "40% through
+  this pan" without knowing (a) the resting camera position right before
+  this scene's pan started (recursively, the previous scene's own final
+  camera state) and (b) this scene's target framing, then computing
+  `tweenCamera(from, to, progress)` as an instant set instead of an
+  animated glide. That's real, not-yet-built work -- a second dispatch
+  mode (seek vs. real-time glide) plus a per-scene resting-camera
+  sequence, not a fix to the boundary-crossing logic.
+- Removed rather than left half-working: `TimelineRuler`/`timelineLayout`
+  kept (still needed for 6.2's block track), but `sceneStore.ts`'s
+  `playheadSeconds`/`scrubTo` and `Timeline.tsx`'s playhead marker/drag
+  handlers/`.timeline-body` wrapper were deleted back out. `jumpToScene`
+  and the edit-in-place flow (6.3.1) were kept -- they only ever jump to a
+  scene's *start*, never an in-between position, so they don't have this
+  gap.
+
+### Deferred / not yet implemented
+- 6.3.2/6.3.3 themselves -- revisit once there's a seek-mode dispatch path
+  and a per-scene resting-camera sequence to interpolate from.
+- Reorder (drag-and-drop or up/down buttons) -- was scoped into 6.2,
+  briefly built with up/down buttons, then explicitly pulled back out on
+  request before this pass; still unbuilt.
+- `currentSceneIndex`/resize interaction: resizing a scene doesn't reset
+  or adjust `currentSceneIndex`/`editingSceneId` the way delete does --
+  not identified as causing an actual problem yet, but worth a look if one
+  turns up (a resize doesn't change array order or length, only a
+  duration, so the existing index-based state should stay valid, unlike
+  delete/reorder).
+
+---
+
 ## 2026-08-17 — Live-preview animation bug fix + SearchBox removal
 
 ### Summary

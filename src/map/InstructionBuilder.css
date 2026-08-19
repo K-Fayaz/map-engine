@@ -85,8 +85,29 @@
   background: #2f323b;
 }
 
+.ib-btn-row {
+  display: flex;
+  gap: 8px;
+}
+
+.ib-cancel-btn {
+  box-sizing: border-box;
+  padding: 8px 14px;
+  border: 1px solid #383b42;
+  border-radius: 4px;
+  background: transparent;
+  color: #e6e6e6;
+  font-family: sans-serif;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.ib-cancel-btn:hover {
+  background: #2f323b;
+}
+
 .ib-add-btn {
-  width: 100%;
+  flex: 1;
   box-sizing: border-box;
   padding: 8px;
   border: 1px solid #4a7dfc;

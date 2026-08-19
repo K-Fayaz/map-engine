@@ -54,6 +54,7 @@
   background: #21232a;
   font-family: sans-serif;
   box-sizing: border-box;
+  cursor: pointer;
 }
 
 .timeline-delete-btn {

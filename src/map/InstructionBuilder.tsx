@@ -1,8 +1,14 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import "./InstructionBuilder.css";
 import { interactionStore, useInteractionStore } from "./interactionStore";
 import type { Entity } from "./entities";
-import { ANIMATION_OPTIONS, animationRequiresEntity, buildScene, type AnimationValue } from "./scenes";
+import {
+  ANIMATION_OPTIONS,
+  animationRequiresEntity,
+  buildScene,
+  sceneAnimationValue,
+  type AnimationValue,
+} from "./scenes";
 import { useSceneStore } from "./sceneStore";
 
 // Right-panel Instruction Builder (roadmap.md Phase 6, section 3). This
@@ -16,13 +22,36 @@ import { useSceneStore } from "./sceneStore";
 // building a story never requires touching it.
 export function InstructionBuilder() {
   const { entities } = useInteractionStore();
+  const scenes = useSceneStore((state) => state.scenes);
   const addScene = useSceneStore((state) => state.addScene);
+  const editingSceneId = useSceneStore((state) => state.editingSceneId);
+  const updateScene = useSceneStore((state) => state.updateScene);
+  const stopEditingScene = useSceneStore((state) => state.stopEditingScene);
   const [query, setQuery] = useState("");
   const [selectedEntity, setSelectedEntity] = useState<Entity | null>(null);
   const [animation, setAnimation] = useState<AnimationValue>(ANIMATION_OPTIONS[0].value);
   // Seconds. Plain local state, becomes part of the Scene "Add to Timeline"
   // creates below.
   const [duration, setDuration] = useState(3);
+
+  // 6.3: clicking a scene block in Timeline.tsx sets editingSceneId, which
+  // this form re-populates from -- only depends on editingSceneId itself
+  // (not `scenes`/`entities`), so it re-syncs when the user picks a
+  // *different* scene to edit, but doesn't fight their in-progress edits
+  // if the scenes array happens to change for an unrelated reason (e.g.
+  // dragging another block's resize handle) while this one stays open.
+  useEffect(() => {
+    if (!editingSceneId) return;
+    const scene = scenes.find((s) => s.id === editingSceneId);
+    if (!scene) return;
+    setAnimation(sceneAnimationValue(scene));
+    setDuration(scene.duration);
+    setSelectedEntity(
+      scene.targetEntityId ? (entities.find((e) => e.id === scene.targetEntityId) ?? null) : null,
+    );
+    setQuery("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingSceneId]);
 
   // Only "Pan" can go without an entity (pans out to the world) -- every
   // other animation needs one picked before a Scene can be built.
@@ -33,12 +62,29 @@ export function InstructionBuilder() {
   // one concrete workflow roadmap.md's own demo describes (section 2) --
   // repeating the same Focus+Highlight/3s pattern for Pakistan, China,
   // Russia in a row -- so the common case doesn't need re-picking
-  // animation/duration for every single entity.
-  const addToTimeline = () => {
+  // animation/duration for every single entity. Editing an existing scene
+  // (editingSceneId set) takes the update branch instead of appending, and
+  // fully resets/exits edit mode afterward rather than carrying anything
+  // over -- editing is a one-off correction, not a repeated pattern.
+  const submit = () => {
     const scene = buildScene(selectedEntity, animation, duration);
     if (!scene) return;
-    addScene(scene);
+    if (editingSceneId) {
+      updateScene(editingSceneId, scene);
+      setSelectedEntity(null);
+      setQuery("");
+    } else {
+      addScene(scene);
+      setSelectedEntity(null);
+    }
+  };
+
+  const cancelEdit = () => {
+    stopEditingScene();
     setSelectedEntity(null);
+    setQuery("");
+    setAnimation(ANIMATION_OPTIONS[0].value);
+    setDuration(3);
   };
 
   // Same substring search interactionStore already exposes -- no new
@@ -143,9 +189,16 @@ export function InstructionBuilder() {
           className="ib-input"
         />
       </div>
-      <button className="ib-add-btn" disabled={!canAdd} onClick={addToTimeline}>
-        Add to Timeline
-      </button>
+      <div className="ib-btn-row">
+        <button className="ib-add-btn" disabled={!canAdd} onClick={submit}>
+          {editingSceneId ? "Update Timeline" : "Add to Timeline"}
+        </button>
+        {editingSceneId && (
+          <button className="ib-cancel-btn" onClick={cancelEdit}>
+            Cancel
+          </button>
+        )}
+      </div>
     </div>
   );
 }
