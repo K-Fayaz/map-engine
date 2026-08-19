@@ -1,0 +1,24 @@
+.timeline-ruler {
+  position: relative;
+  height: 24px;
+  margin: 0 12px;
+  border-bottom: 1px solid #383b42;
+}
+
+.timeline-ruler-tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: #383b42;
+}
+
+.timeline-ruler-label {
+  position: absolute;
+  top: 2px;
+  left: 4px;
+  font-family: sans-serif;
+  font-size: 11px;
+  color: #6a6e76;
+  white-space: nowrap;
+}

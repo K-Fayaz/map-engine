@@ -20,11 +20,17 @@ import { dispatchScene } from "./actionRegistry";
 interface SceneStore {
   scenes: Scene[];
   addScene: (scene: Scene) => void;
+  resizeScene: (id: string, duration: number) => void;
+  deleteScene: (id: string) => void;
   currentSceneIndex: number | null;
   isPlaying: boolean;
   play: () => void;
   pause: () => void;
 }
+
+// Floor for drag-to-resize, same as the Instruction Builder's duration
+// input -- a scene can't shrink to zero/negative.
+const MIN_SCENE_DURATION = 0.5;
 
 let holdTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -58,6 +64,26 @@ export const useSceneStore = create<SceneStore>((set, get) => {
   return {
     scenes: [],
     addScene: (scene) => set((state) => ({ scenes: [...state.scenes, scene] })),
+    resizeScene: (id, duration) =>
+      set((state) => ({
+        scenes: state.scenes.map((scene) =>
+          scene.id === id ? { ...scene, duration: Math.max(MIN_SCENE_DURATION, duration) } : scene,
+        ),
+      })),
+    // Unconditionally resets playback (clears the hold timer, stops, drops
+    // currentSceneIndex to null) rather than trying to adjust the index to
+    // account for the shift -- deleting the currently-playing/paused scene,
+    // or one before it, would otherwise leave currentSceneIndex pointing at
+    // the wrong scene. Same "start over" reset playFrom already does when
+    // it runs off the end of the array.
+    deleteScene: (id) => {
+      clearHoldTimer();
+      set((state) => ({
+        scenes: state.scenes.filter((scene) => scene.id !== id),
+        isPlaying: false,
+        currentSceneIndex: null,
+      }));
+    },
     currentSceneIndex: null,
     isPlaying: false,
     // No transition/hold split (roadmap.md section 16, explicitly deferred)

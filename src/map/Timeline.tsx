@@ -1,21 +1,49 @@
+import { useRef } from "react";
 import "./Timeline.css";
 import { useInteractionStore } from "./interactionStore";
 import { useSceneStore } from "./sceneStore";
 import { describeAnimation } from "./scenes";
+import { TimelineRuler } from "./TimelineRuler";
+import { PIXELS_PER_SECOND } from "./timelineLayout";
 
-// Bottom-left Timeline panel (roadmap.md Phase 6, section 8). Deliberately
-// a plain list for this step -- positioned left-to-right, no cumulative-
-// duration track, no drag-resize/reorder/delete. Turning this into the
-// actual visual timeline (blocks laid out by duration, draggable) is 6.2,
-// not this step; this only proves scenes created by the Instruction
-// Builder actually land here, in order.
+// Bottom-left Timeline panel (roadmap.md Phase 6, section 8). Scene blocks
+// are laid out edge-to-edge, each block's width = duration *
+// PIXELS_PER_SECOND, so the track lines up with the ruler above it.
+// Reorder/delete are the rest of 6.2, not yet built.
 export function Timeline() {
   const scenes = useSceneStore((state) => state.scenes);
   const currentSceneIndex = useSceneStore((state) => state.currentSceneIndex);
   const isPlaying = useSceneStore((state) => state.isPlaying);
   const play = useSceneStore((state) => state.play);
   const pause = useSceneStore((state) => state.pause);
+  const resizeScene = useSceneStore((state) => state.resizeScene);
+  const deleteScene = useSceneStore((state) => state.deleteScene);
   const { entities } = useInteractionStore();
+  const totalDurationSeconds = scenes.reduce((sum, scene) => sum + scene.duration, 0);
+
+  // Drag-to-resize state lives in a ref, not React state -- it only needs
+  // to be read inside pointer-move/up handlers, never rendered off of, so
+  // a ref avoids a re-render on every pixel of mouse movement (resizeScene
+  // itself already triggers the re-render that actually matters, via the
+  // width recompute below). Only one block can be resized at a time, so a
+  // single ref (not one per block) is enough.
+  const dragRef = useRef<{ sceneId: string; startX: number; startDuration: number } | null>(null);
+
+  const startResize = (e: React.PointerEvent, sceneId: string, duration: number) => {
+    e.currentTarget.setPointerCapture(e.pointerId);
+    dragRef.current = { sceneId, startX: e.clientX, startDuration: duration };
+  };
+
+  const onResizeMove = (e: React.PointerEvent) => {
+    if (!dragRef.current) return;
+    const deltaSeconds = (e.clientX - dragRef.current.startX) / PIXELS_PER_SECOND;
+    resizeScene(dragRef.current.sceneId, dragRef.current.startDuration + deltaSeconds);
+  };
+
+  const endResize = (e: React.PointerEvent) => {
+    e.currentTarget.releasePointerCapture(e.pointerId);
+    dragRef.current = null;
+  };
 
   const nameForScene = (targetEntityId?: string): string => {
     if (!targetEntityId) return "World";
@@ -38,20 +66,38 @@ export function Timeline() {
       {scenes.length === 0 ? (
         <div className="timeline-empty">No scenes yet -- build one in the Instruction Builder.</div>
       ) : (
-        <ol className="timeline-list">
-          {scenes.map((scene, index) => (
-            <li
-              key={scene.id}
-              className={
-                index === currentSceneIndex ? "timeline-row timeline-row-active" : "timeline-row"
-              }
-            >
-              <span className="timeline-entity">{nameForScene(scene.targetEntityId)}</span>
-              <span className="timeline-animation">{describeAnimation(scene)}</span>
-              <span className="timeline-duration">{scene.duration}s</span>
-            </li>
-          ))}
-        </ol>
+        <>
+          <TimelineRuler totalDurationSeconds={totalDurationSeconds} />
+          <ol className="timeline-track">
+            {scenes.map((scene, index) => (
+              <li
+                key={scene.id}
+                className={
+                  index === currentSceneIndex ? "timeline-block timeline-block-active" : "timeline-block"
+                }
+                style={{ width: scene.duration * PIXELS_PER_SECOND }}
+              >
+                <button
+                  type="button"
+                  className="timeline-delete-btn"
+                  onClick={() => deleteScene(scene.id)}
+                  aria-label={`Delete ${nameForScene(scene.targetEntityId)} scene`}
+                >
+                  ×
+                </button>
+                <span className="timeline-entity">{nameForScene(scene.targetEntityId)}</span>
+                <span className="timeline-animation">{describeAnimation(scene)}</span>
+                <span className="timeline-duration">{scene.duration}s</span>
+                <div
+                  className="timeline-resize-handle"
+                  onPointerDown={(e) => startResize(e, scene.id, scene.duration)}
+                  onPointerMove={onResizeMove}
+                  onPointerUp={endResize}
+                />
+              </li>
+            ))}
+          </ol>
+        </>
       )}
     </div>
   );

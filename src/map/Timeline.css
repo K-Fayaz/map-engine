@@ -33,36 +33,85 @@
   padding: 12px;
 }
 
-.timeline-list {
+.timeline-track {
   list-style: none;
   margin: 0;
-  padding: 12px;
+  padding: 0 12px;
   display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
+  /* Edge-to-edge, not gapped -- each block's width is duration *
+     PIXELS_PER_SECOND (timelineLayout.ts), so blocks touching is what
+     keeps the track's cumulative width lined up with the ruler above it. */
 }
 
-.timeline-row {
+.timeline-block {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 8px 10px;
+  padding: 22px 10px 8px;
   border: 1px solid #383b42;
-  border-radius: 4px;
+  border-right: none;
   background: #21232a;
   font-family: sans-serif;
-  min-width: 120px;
+  box-sizing: border-box;
+}
+
+.timeline-delete-btn {
+  position: absolute;
+  top: 0;
+  right: 4px;
+  transform: translateY(-50%);
+  z-index: 1;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  line-height: 1;
+  font-size: 16px;
+  color: #9a9ea6;
+  background: #2c2f38;
+  border: 1px solid #383b42;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.timeline-delete-btn:hover {
+  color: #e6e6e6;
+  background: #383b42;
+}
+
+.timeline-resize-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.timeline-resize-handle:hover {
+  background: #5b8def;
+}
+
+.timeline-block:last-child {
+  border-right: 1px solid #383b42;
 }
 
 .timeline-entity {
   font-size: 13px;
   color: #e6e6e6;
   font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .timeline-animation {
   font-size: 12px;
   color: #9a9ea6;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .timeline-duration {
@@ -70,7 +119,7 @@
   color: #6a6e76;
 }
 
-.timeline-row-active {
+.timeline-block-active {
   border-color: #5b8def;
   box-shadow: 0 0 0 1px #5b8def;
 }
