@@ -28,7 +28,12 @@ type Listener = () => void;
 // seconds" (a scripted Phase 6 scene pan, via camera.ts's tweenCamera) --
 // omitted, it's the original fast interactive fly-to (InstructionBuilder's
 // live preview), unchanged from before this existed.
-type FocusListener = (id: string | null, durationSeconds?: number) => void;
+// `fromWorldView`, only meaningful alongside a durationSeconds glide, means
+// "start the glide from world view" instead of from wherever the camera
+// currently sits -- used for a story's first scene when the user opts into
+// a cinematic world->scene1 open (sceneStore.ts's startFromWorldView),
+// rather than the glide silently depending on leftover camera position.
+type FocusListener = (id: string | null, durationSeconds?: number, fromWorldView?: boolean) => void;
 
 function createInteractionStore() {
   let state: InteractionState = {
@@ -123,8 +128,8 @@ function createInteractionStore() {
       focusListeners.add(listener);
       return () => focusListeners.delete(listener);
     },
-    requestFocus(id: string | null, durationSeconds?: number) {
-      for (const listener of focusListeners) listener(id, durationSeconds);
+    requestFocus(id: string | null, durationSeconds?: number, fromWorldView?: boolean) {
+      for (const listener of focusListeners) listener(id, durationSeconds, fromWorldView);
     },
   };
 }

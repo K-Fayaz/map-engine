@@ -26,6 +26,18 @@
   cursor: default;
 }
 
+.timeline-world-view-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 12px 0;
+  font-family: sans-serif;
+  font-size: 12px;
+  color: #9a9ea6;
+  cursor: pointer;
+  user-select: none;
+}
+
 .timeline-empty {
   font-family: sans-serif;
   font-size: 13px;

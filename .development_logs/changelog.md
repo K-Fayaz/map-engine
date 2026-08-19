@@ -5,6 +5,94 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-19 — Playback bug fix: deterministic camera start for a fresh Play
+
+### Summary
+User-reported: Play's first scene glides from wherever the camera *currently*
+happens to be, not from any fixed/known point. Repro: build "Pan to India,
+3s" then "Highlight Uganda, 3s"; manually pan the map to world view; hit
+Play -- looks fine, since the live camera happened to be at world view.
+Hit Play again right after (camera now resting on Uganda, from the end of
+the sequence) -- scene 1 now glides Uganda -> India instead, a different-
+looking pan every time depending on unrelated prior state (manual input,
+where a previous playback stopped). Discussed two candidate fixes before
+touching code: force-reset to world view every Play (rejected -- user
+doesn't want that forced on every playback), vs. snap directly to scene 1's
+target (deterministic, but loses the cinematic "pan in from world view"
+look some stories want). Landed on a third option, discussed and agreed
+with the user turn-by-turn: a per-story toggle -- off (default) snaps scene
+1 straight to its target, on scripts a glide from a fixed world-view start.
+Either setting is deterministic; neither depends on live/leftover camera
+state anymore. Not yet verified in-browser -- `tsc --noEmit` clean, correct
+by inspection, actual repro-based verification still pending.
+
+### Changes
+
+**`interactionStore.ts`**
+- `FocusListener`/`requestFocus` widened with an optional 3rd `fromWorldView`
+  param (alongside the existing `durationSeconds`) -- all existing callers
+  omit it, fully backward compatible.
+
+**`MapCanvas.tsx`**
+- `onFocusRequest`'s scripted-glide branch now picks `scriptedPan.from` as
+  `clampCamera({x:0,y:0,zoom:MIN_ZOOM}, ...)` (world view) when
+  `fromWorldView` is set, instead of always reading the live `current`
+  camera value -- the one line that actually fixes the non-determinism.
+
+**`actionRegistry.ts`**
+- New `CameraStart = "instant" | "world"` type, threaded through
+  `dispatchScene`/`dispatchAction`/`ActionHandler` as an optional trailing
+  param -- only ever passed for a scene's `camera` action, never
+  `scene.actions`. Only the `pan` handler reads it: `"instant"` calls
+  `requestFocus` with no duration at all (reuses the existing fast
+  interactive fly-to path -- see Decisions below on why this, not a hard
+  cut); `"world"` calls `requestFocus(id, durationSeconds, true)`.
+  `highlight`/`clearHighlight` ignore the new param, same pattern already
+  used for their ignored `_durationSeconds`.
+
+**`sceneStore.ts`**
+- New `startFromWorldView: boolean` (default `false`) + `setStartFromWorldView`.
+  Story-level state, not per-scene -- describes how the whole story opens.
+- `play()` now computes `isFreshStart = currentSceneIndex === null` *before*
+  dispatching (true only for a genuine fresh Play from scene 0, false for a
+  resume-from-pause) and passes it into `playFrom`.
+- `playFrom(index, isFirstDispatch = false)` -- only when `isFirstDispatch`
+  is true does it pass a `cameraStart` mode into `dispatchScene`
+  (`startFromWorldView ? "world" : "instant"`); every later scene in the
+  same run, every resume, and `jumpToScene` (unchanged, separate call site)
+  dispatch exactly as before with no mode at all.
+
+**`Timeline.tsx` / `Timeline.css`**
+- New "Start from world view" checkbox next to the Play/Pause toggle, bound
+  to `sceneStore`'s new field.
+
+### Decisions
+- **Toggle, not a forced default either way.** Discussed three options with
+  the user across several turns: always-world-view (rejected -- shouldn't be
+  forced on every playback), always-snap (rejected once the user clarified
+  they do want a visible pan-in-from-world-view look for some stories), a
+  per-story toggle (chosen). A story-level boolean, not per-scene, since it
+  describes how the whole thing opens.
+- **"Snap" reuses the existing fast interactive fly-to, not a true
+  zero-frame hard cut.** Explicitly discussed and decided: the "instant"
+  `cameraStart` mode omits `durationSeconds` entirely, which routes through
+  the same `target = newTarget` + `lerpCamera` ease `SearchBox`/manual
+  entity picks already use -- a quick pop, not a literal single-frame
+  snap (that would need also setting `current = newTarget` immediately,
+  skipping the ease). Deliberately deferred rather than built now -- fast
+  ease is what's shipped; a true hard-cut mode is easy to add later
+  (one extra line in the same `MapCanvas.tsx` branch) if it turns out to be
+  wanted.
+
+### Deferred / not yet implemented
+- Full in-browser verification of the original repro (India/Uganda,
+  manual pan, replay, toggle on/off) -- correct by inspection and a clean
+  `tsc --noEmit`, but not yet exercised in the running app.
+- A true hard-cut/zero-frame snap mode, if "fast ease" turns out to be too
+  visible for some use cases -- see Decisions above.
+
+---
+
 ## 2026-08-19 — Phase 6.2 (visual timeline) + 6.3.1 (scene selection); 6.3.2/6.3.3 built then pulled
 
 ### Summary

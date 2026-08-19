@@ -19,6 +19,8 @@ export function Timeline() {
   const resizeScene = useSceneStore((state) => state.resizeScene);
   const deleteScene = useSceneStore((state) => state.deleteScene);
   const jumpToScene = useSceneStore((state) => state.jumpToScene);
+  const startFromWorldView = useSceneStore((state) => state.startFromWorldView);
+  const setStartFromWorldView = useSceneStore((state) => state.setStartFromWorldView);
   const { entities } = useInteractionStore();
   // Floor of 60s so the ruler still shows a full minute of ticks with no
   // scenes yet, instead of collapsing to nothing.
@@ -66,6 +68,18 @@ export function Timeline() {
       >
         {isPlaying ? "Pause" : "Play"}
       </button>
+      {/* Only affects a fresh Play (scene 0, not a resume) -- when off, that
+          first scene snaps straight to its target instead of gliding from
+          world view; either way the start no longer depends on wherever the
+          camera was last left. */}
+      <label className="timeline-world-view-toggle">
+        <input
+          type="checkbox"
+          checked={startFromWorldView}
+          onChange={(e) => setStartFromWorldView(e.target.checked)}
+        />
+        Start from world view
+      </label>
       <TimelineRuler totalDurationSeconds={totalDurationSeconds} />
       {scenes.length === 0 ? (
         <div className="timeline-empty">No scenes yet -- build one in the Instruction Builder.</div>

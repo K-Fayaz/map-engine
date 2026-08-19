@@ -954,7 +954,7 @@ export function MapCanvas() {
         // durationSeconds given) just requested focus for. Decoupled from
         // drawHighlights above -- a focus request isn't itself a
         // selection/hover state change.
-        unsubscribeFocus = interactionStore.onFocusRequest((id, durationSeconds) => {
+        unsubscribeFocus = interactionStore.onFocusRequest((id, durationSeconds, fromWorldView) => {
           // null = "focus the whole world" (Phase 6's target-less "pan"
           // action) -- the world-space bounds fit computation below doesn't
           // apply, since there's no entity to look up; zoom = MIN_ZOOM,
@@ -986,12 +986,18 @@ export function MapCanvas() {
           }
           // Scripted: glide from wherever the camera is right now to
           // newTarget over exactly durationSeconds (camera.ts's
-          // tweenCamera, driven each frame in applyCameraTransform above).
+          // tweenCamera, driven each frame in applyCameraTransform above) --
+          // unless fromWorldView asks for a deterministic world-view start
+          // instead (a story's first scene, when the user opts into the
+          // cinematic open; see sceneStore.ts's startFromWorldView).
           // Unscripted (no duration given): same fast interactive ease as
           // before -- only sets `target`, the ticker's lerpCamera carries
           // `current` toward it, same as wheel-zoom does.
           if (durationSeconds !== undefined) {
-            scriptedPan = { from: current, to: newTarget, startTime: performance.now(), durationMs: durationSeconds * 1000 };
+            const from = fromWorldView
+              ? clampCamera({ x: 0, y: 0, zoom: MIN_ZOOM }, viewW, viewH, MAX_ZOOM)
+              : current;
+            scriptedPan = { from, to: newTarget, startTime: performance.now(), durationMs: durationSeconds * 1000 };
           } else {
             target = newTarget;
           }

@@ -38,6 +38,14 @@ interface SceneStore {
   isPlaying: boolean;
   play: () => void;
   pause: () => void;
+  // Whether a fresh Play (starting from scene 0, not a resume-from-pause)
+  // opens with a scripted glide from world view into scene 1, vs. snapping
+  // straight there. Either way the start is now deterministic -- neither
+  // depends on wherever the camera happened to be left (a manual pan, or
+  // the end of a previous playback). Story-level, not per-scene: it
+  // describes how the whole story opens, not any one scene's own behavior.
+  startFromWorldView: boolean;
+  setStartFromWorldView: (value: boolean) => void;
 }
 
 // Floor for drag-to-resize, same as the Instruction Builder's duration
@@ -60,15 +68,20 @@ export const useSceneStore = create<SceneStore>((set, get) => {
   // resetting currentSceneIndex to null (so a subsequent Play restarts from
   // scene 0, matching the plan's "replay" expectation rather than staying
   // stuck at the end).
-  const playFrom = (index: number) => {
-    const { scenes } = get();
+  // `isFirstDispatch` is only true for a fresh Play's very first scene (see
+  // play() below) -- that's the one dispatch that needs a deterministic
+  // camera start instead of gliding from whatever the live camera happens
+  // to be. Every later scene in the same run, and every resume-from-pause,
+  // omits it and dispatches exactly as before.
+  const playFrom = (index: number, isFirstDispatch = false) => {
+    const { scenes, startFromWorldView } = get();
     if (index >= scenes.length) {
       clearHoldTimer();
       set({ isPlaying: false, currentSceneIndex: null });
       return;
     }
     const scene = scenes[index];
-    dispatchScene(scene);
+    dispatchScene(scene, isFirstDispatch ? (startFromWorldView ? "world" : "instant") : undefined);
     set({ currentSceneIndex: index });
     holdTimer = setTimeout(() => playFrom(index + 1), scene.duration * 1000);
   };
@@ -134,12 +147,15 @@ export const useSceneStore = create<SceneStore>((set, get) => {
     play: () => {
       const { isPlaying, scenes, currentSceneIndex } = get();
       if (isPlaying || scenes.length === 0) return;
+      const isFreshStart = currentSceneIndex === null;
       set({ isPlaying: true });
-      playFrom(currentSceneIndex ?? 0);
+      playFrom(currentSceneIndex ?? 0, isFreshStart);
     },
     pause: () => {
       clearHoldTimer();
       set({ isPlaying: false });
     },
+    startFromWorldView: false,
+    setStartFromWorldView: (value) => set({ startFromWorldView: value }),
   };
 });
