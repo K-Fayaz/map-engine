@@ -5,6 +5,98 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-19 — Bug fix: stale highlight carried over into a fresh replay
+
+### Summary
+User-reported and reproduced: a story ending with a Highlight action (e.g.
+Pakistan/Pan 2s -> Punjab/Highlight 2.5s), played through to completion,
+then played again from the start -- Punjab stayed visibly highlighted all
+through the *second* run's Pakistan/Pan scene, even though that scene has
+no highlight action at all. Same root category as the camera-determinism
+bugs fixed earlier this session, for a different piece of state: a fresh
+Play's first dispatch was already made deterministic for *camera*
+(`cameraStart`/`isFirstDispatch` in `sceneStore.ts`), but nothing
+equivalent existed for *highlight* (`interactionStore.selectedEntityIds`)
+-- it just carried over from whatever was true before (a previous full
+playback, or an unrelated manual pick), unless the new run's own scenes
+happened to touch it first.
+
+Discussed cleanly rather than patched ad hoc: user's instinct was "convert
+scenes to JSON so replay only reflects the JSON" -- pointed out the Scene
+list already *is* that plain data, and playback already dispatches purely
+from it; the actual gap was that nothing resets the *live* state a scene
+can express back to a baseline before interpreting it from scene 0.
+Considered forcing highlight's reset into the exact same `CameraStart`
+mechanism camera uses, and rejected it: camera's determinism is about how
+its own *next in-scene dispatch* begins (scene 0 might not even have a
+camera action), which is a fundamentally different shape of problem than
+"unconditionally clear a flag that outlives one scene" -- forcing them into
+one mechanism would have meant teleporting the camera to a fixed spot
+before scene 0's own pan runs, fighting with `cameraStart: "instant"`'s
+"snap directly to scene 1, no visible motion first" behavior. Built a
+second, narrower mechanism instead, scoped specifically to
+unconditional-reset semantics.
+
+Verified in-browser: rebuilt the exact reported story, played it to
+completion (Punjab highlighted, as expected), then played again and
+screenshotted the very first frame of the new run -- Pakistan's Pan scene
+active, camera correctly panning, **no stale Punjab highlight** this time.
+
+### Changes
+
+**`actionRegistry.ts`**
+- New `ResetHandler = () => void`, `registerReset(handler)`,
+  `resetToBaseline()` -- a second, independent registry alongside the
+  existing action registry, deliberately not reusing `CameraStart`/
+  `registerAction` (see Decisions). `resetToBaseline()` runs every
+  registered handler unconditionally.
+- New `registerReset(() => interactionStore.toggleEntity(null, false))`,
+  placed next to the existing `clearHighlight` action registration --
+  same underlying call, registered separately since a reset must fire
+  regardless of whether scene 0 happens to be a `clearHighlight` itself.
+
+**`sceneStore.ts`**
+- `play()` now calls `resetToBaseline()` once, only when `isFreshStart` is
+  true (before `set({isPlaying: true})`/`playFrom`) -- never on
+  resume-from-pause, where whatever's currently shown should keep
+  showing, not reset.
+
+### Decisions
+- **Two separate reset mechanisms, not one forced into symmetry.**
+  `CameraStart` (existing) governs *how a specific in-scene camera dispatch
+  begins* -- coupled to whether scene 0 even has a camera action.
+  `registerReset` (new) governs *unconditional* resets of state that can
+  outlive a single scene -- correct to run regardless of what scene 0
+  contains. Tried to unify them under one abstraction first and rejected
+  it once the camera case was worked through concretely: an unconditional
+  camera reset would visibly teleport the camera to a fixed spot *before*
+  scene 0's own pan (if any) gets to run, which is wrong for the
+  `"instant"` (snap-directly-to-scene-1) mode specifically. Honest
+  asymmetry, not forced uniformity.
+- **A registry, not a hardcoded call in `sceneStore.play()`.** Consistent
+  with `docs/phase_6_arch.md`'s "new action type = new registration, not
+  new dispatcher logic": a future action type with similar
+  outlives-a-single-scene state (unclear what yet, but the shape exists
+  now) registers its own reset the same way `clearHighlight`'s did, rather
+  than `sceneStore.ts` needing to know about every such state by name.
+- **Rejected "recompute full state by replaying the JSON from scratch."**
+  The user's own framing, considered and set aside as solving a bigger
+  problem than the one at hand -- that's effectively the seek/scrub
+  machinery already deferred for 6.3.2/6.3.3 (needing a seek-vs-glide
+  dispatch mode and a per-scene resting-camera sequence), not what's
+  needed for "reset once at a genuine fresh start."
+
+### Deferred / not yet implemented
+- `jumpToScene` (clicking a block to preview/edit) does not run
+  `resetToBaseline()` -- clicking a Pan-only scene while something else is
+  highlighted still leaves that highlight showing. Not addressed this
+  pass -- the reported bug was specifically about Play's fresh start, and
+  jump-to-preview arguably has different, not-yet-decided semantics
+  (preview *this scene's own effect* vs. preview *the fully-reset state at
+  this point*) worth a separate discussion if it comes up.
+
+---
+
 ## 2026-08-19 — New "Hold" animation: rest the camera at the previous scene's end
 
 ### Summary

@@ -36,6 +36,35 @@ import type { Scene, SceneAction, CameraAction } from "./scenes";
 // jumpToScene) omits it and behaves exactly as before.
 export type CameraStart = "instant" | "world";
 
+// A reset handler undoes some persistent visual state an action type owns
+// (today: highlight/selection) back to a known baseline. Called once by
+// sceneStore.ts's play(), only on a genuine fresh start (never on resume,
+// never between later scenes), so a story's replay -- or its very first
+// play, if something was already highlighted from an earlier manual pick --
+// never silently inherits leftover state from outside itself.
+//
+// Deliberately *not* the same mechanism as CameraStart above, even though
+// both exist to make a fresh Play deterministic: camera's determinism is
+// about how its own next *in-scene* dispatch begins (scene 0 might not even
+// have a camera action), so forcing an unconditional camera reset here
+// would fight with `cameraStart: "instant"`'s "snap directly to scene 1,
+// no visible motion first" behavior. Highlight has no such coupling --
+// it's always correct to clear it before a fresh run, whether or not scene
+// 0's own actions happen to touch it -- so it gets this simpler,
+// unconditional mechanism instead. A future action type with similar
+// "flag that outlives a single scene" semantics would register its own
+// reset here too, rather than sceneStore needing to know about it by name.
+export type ResetHandler = () => void;
+const resetHandlers: ResetHandler[] = [];
+
+export function registerReset(handler: ResetHandler): void {
+  resetHandlers.push(handler);
+}
+
+export function resetToBaseline(): void {
+  for (const handler of resetHandlers) handler();
+}
+
 export type ActionHandler = (
   params: Record<string, unknown>,
   durationSeconds: number,
@@ -112,3 +141,9 @@ registerAction("highlight", (params, _durationSeconds, _cameraStart) => {
 registerAction("clearHighlight", (_params, _durationSeconds, _cameraStart) => {
   interactionStore.toggleEntity(null, false);
 });
+
+// Highlight's baseline is "nothing selected" -- the same call clearHighlight
+// makes, registered separately here since a reset must run unconditionally
+// at a fresh Play's start, regardless of whether scene 0 is a clearHighlight
+// itself.
+registerReset(() => interactionStore.toggleEntity(null, false));

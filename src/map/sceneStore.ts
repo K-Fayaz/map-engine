@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { Scene } from "./scenes";
-import { dispatchScene } from "./actionRegistry";
+import { dispatchScene, resetToBaseline } from "./actionRegistry";
 
 // Scene/timeline state, read by both the Instruction Builder ("Add to
 // Timeline" pushes here) and the Timeline panel (renders whatever's in
@@ -148,6 +148,11 @@ export const useSceneStore = create<SceneStore>((set, get) => {
       const { isPlaying, scenes, currentSceneIndex } = get();
       if (isPlaying || scenes.length === 0) return;
       const isFreshStart = currentSceneIndex === null;
+      // Clears any leftover highlight (from the end of a previous full
+      // playback, or an unrelated manual pick) before a genuine fresh
+      // start -- never on resume-from-pause, where whatever's currently
+      // shown is exactly what should continue.
+      if (isFreshStart) resetToBaseline();
       set({ isPlaying: true });
       playFrom(currentSceneIndex ?? 0, isFreshStart);
     },
