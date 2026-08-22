@@ -75,6 +75,91 @@ export function lerpCamera(current: Camera, target: Camera, factor: number): Cam
   };
 }
 
+// Van Wijk & Nuij's camera-flight curve ("Smooth and Efficient Zooming and
+// Panning," IEEE InfoVis 2003) -- the same closed-form solution behind
+// Mapbox GL JS's flyTo and d3.interpolateZoom, not a from-scratch heuristic.
+// Two earlier attempts at tweenCamera below (linear x/y+zoom, then a
+// geometric zoom + linearly-interpolated world-space center) both
+// interpolated position and zoom as independent quantities; both broke
+// down for long hops (e.g. world view -> a small country) because nothing
+// coordinated *how much of the trip* should be spent panning versus
+// zooming -- zoom would already be visually significant while position was
+// still far from its target, landing the camera zoomed in tight on
+// whatever unrelated place the still-catching-up position happened to be
+// at. Van Wijk & Nuij's curve fixes this by treating position and "view
+// width" (~ 1/zoom) as one combined path (a hyperbolic arc in log-zoom
+// space) derived from the actual distance and zoom difference between the
+// two endpoints: a short hop barely zooms out at all (near-direct pan), a
+// long hop flares out to a wider view partway through then zooms back in
+// (a believable "fly over, then arrive") -- both emerge automatically from
+// the same formula and the single shared constant RHO below, not a
+// per-scene tuned delay/threshold.
+const RHO = Math.SQRT2;
+const RHO2 = RHO * RHO;
+const RHO4 = RHO2 * RHO2;
+// Below this squared distance, the two endpoints are (numerically) the
+// same point -- a pure zoom, no pan to arc over -- handled as a separate
+// case below since the general formula divides by the pan distance.
+const EPSILON2 = 1e-12;
+
+// The arc itself, parametrized by t in [0, 1] (already-eased elapsed
+// fraction -- see tweenCamera below). (ux, uy) is a world-space center
+// point, w is the "view width" at that point (screenWidth / (baseScaleX *
+// zoom) -- larger w means more zoomed out, same units as ux/uy so the
+// distance/width terms below are dimensionally consistent).
+function vanWijkNuij(
+  ux0: number,
+  uy0: number,
+  w0: number,
+  ux1: number,
+  uy1: number,
+  w1: number,
+  t: number,
+): { x: number; y: number; w: number } {
+  const dx = ux1 - ux0;
+  const dy = uy1 - uy0;
+  const d2 = dx * dx + dy * dy;
+
+  if (d2 < EPSILON2) {
+    const S = Math.log(w1 / w0) / RHO;
+    return { x: ux0 + t * dx, y: uy0 + t * dy, w: w0 * Math.exp(RHO * t * S) };
+  }
+
+  const d1 = Math.sqrt(d2);
+  const b0 = (w1 * w1 - w0 * w0 + RHO4 * d2) / (2 * w0 * RHO2 * d1);
+  const b1 = (w1 * w1 - w0 * w0 - RHO4 * d2) / (2 * w1 * RHO2 * d1);
+  const r0 = Math.log(Math.sqrt(b0 * b0 + 1) - b0);
+  const r1 = Math.log(Math.sqrt(b1 * b1 + 1) - b1);
+  const S = (r1 - r0) / RHO;
+
+  const s = t * S;
+  const coshR0 = Math.cosh(r0);
+  const u = (w0 / (RHO2 * d1)) * (coshR0 * Math.tanh(RHO * s + r0) - Math.sinh(r0));
+  const w = (w0 * coshR0) / Math.cosh(RHO * s + r0);
+
+  return { x: ux0 + u * dx, y: uy0 + u * dy, w };
+}
+
+// This Camera's world-space center point and "view width" -- the two
+// quantities vanWijkNuij's arc is defined over. Inverse of the
+// x = center*scale*zoom relation every other camera.ts function already
+// uses to go the other way (e.g. focusOnBounds).
+function cameraCenterAndWidth(
+  camera: Camera,
+  screenWidth: number,
+  screenHeight: number,
+  baseScaleX: number,
+  baseScaleY: number,
+): { x: number; y: number; w: number } {
+  const scaleX = baseScaleX * camera.zoom;
+  const scaleY = baseScaleY * camera.zoom;
+  return {
+    x: (screenWidth / 2 - camera.x) / scaleX,
+    y: (screenHeight / 2 - camera.y) / scaleY,
+    w: screenWidth / scaleX,
+  };
+}
+
 // Fixed-duration camera interpolation for scripted (Phase 6 scene) pans --
 // deliberately separate from lerpCamera above, not a reuse of it.
 // lerpCamera is an *asymptotic* ease toward a `target` that can itself keep
@@ -85,14 +170,42 @@ export function lerpCamera(current: Camera, target: Camera, factor: number): Cam
 // exactly that much wall-clock time instead -- a different math problem,
 // so it gets its own function rather than bending lerpCamera to do both.
 // `progress` is elapsed/duration, 0..1 linear; eased internally (ease-
-// in-out cubic) so the motion still feels natural, not linear/robotic.
-export function tweenCamera(from: Camera, to: Camera, progress: number): Camera {
+// in-out cubic, unrelated to and composed with vanWijkNuij's own arc shape
+// above -- this controls *pacing* in time, the arc controls the *spatial*
+// path) so the motion still feels natural, not linear/robotic.
+//
+// Needs screenWidth/screenHeight/baseScaleX/baseScaleY (unlike every other
+// Camera-only function above) to convert x/y into a world-space center
+// point and "view width," and back, for vanWijkNuij's arc.
+export function tweenCamera(
+  from: Camera,
+  to: Camera,
+  progress: number,
+  screenWidth: number,
+  screenHeight: number,
+  baseScaleX: number,
+  baseScaleY: number,
+): Camera {
   const t =
     progress < 0.5 ? 4 * progress ** 3 : 1 - Math.pow(-2 * progress + 2, 3) / 2;
+
+  const from2 = cameraCenterAndWidth(from, screenWidth, screenHeight, baseScaleX, baseScaleY);
+  const to2 = cameraCenterAndWidth(to, screenWidth, screenHeight, baseScaleX, baseScaleY);
+  const { x: centerX, y: centerY, w } = vanWijkNuij(
+    from2.x,
+    from2.y,
+    from2.w,
+    to2.x,
+    to2.y,
+    to2.w,
+    t,
+  );
+  const zoom = screenWidth / (baseScaleX * w);
+
   return {
-    x: from.x + (to.x - from.x) * t,
-    y: from.y + (to.y - from.y) * t,
-    zoom: from.zoom + (to.zoom - from.zoom) * t,
+    x: screenWidth / 2 - centerX * baseScaleX * zoom,
+    y: screenHeight / 2 - centerY * baseScaleY * zoom,
+    zoom,
   };
 }
 

@@ -5,6 +5,269 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-19 — Investigated: WebGL "Insufficient buffer size" console warning
+
+### Summary
+Noticed while checking console output after the Van Wijk & Nuij tween
+verification above: `GL_INVALID_OPERATION: glDrawElements: Insufficient
+buffer size`, firing exactly 256 times then self-silenced by Chrome
+("too many errors, no more errors will be reported"). Investigated whether
+this was caused by today's `MAX_ZOOM` raise (16 -> 2000) or the camera
+tween rewrite, since both are new, zoom-heavy changes from this session.
+
+Isolated via three separate reloads with a clean console each time:
+(1) 400 synthetic wheel-zoom events dispatched directly on the canvas
+(pure manual `lerpCamera` interactive zoom, no `tweenCamera`/scripted pans
+involved at all) reproduced the identical warning; (2) ~9 wheel events
+(zoom ~50, well below both the old and new `MAX_ZOOM`) reproduced it too;
+(3) **zero interaction at all** -- just page load plus a wait -- reproduced
+the identical 256-times warning on its own. Conclusion: this is a
+pre-existing, load-time issue, completely unrelated to zoom level,
+`MAX_ZOOM`'s value, or today's tween work. It was almost certainly already
+happening before this session (at the old `MAX_ZOOM = 16`) and simply
+hadn't been noticed since nobody had checked devtools console closely.
+
+### Decisions
+- **Not fixed this session -- deferred, not blocking.** No visual defect
+  was ever observed alongside it (every screenshot across all of today's
+  verification, at every zoom level tested, rendered correctly), and it's
+  independent of everything changed today, so it doesn't gate any of this
+  session's work. Root cause not fully identified -- working theory
+  (not confirmed) is something in the initial ~4600 state-border polygons'
+  first WebGL batch flush on load, given it fires unconditionally at
+  startup regardless of any subsequent interaction.
+
+### Deferred / not yet implemented
+- Root-causing and fixing the WebGL buffer-size warning itself, if a
+  clean console becomes a priority -- likely needs profiling Pixi's batch
+  renderer during the initial states-layer construction, not a zoom/camera
+  investigation (that avenue is now ruled out).
+
+---
+
+## 2026-08-19 — Camera tween rewritten on Van Wijk & Nuij's flight curve
+
+### Summary
+Third and (for this bug family) final iteration on `tweenCamera` this
+session. User reported the world-view -> Singapore scripted pan visibly
+"zoomed into Africa first" before angling east to Singapore -- confirmed
+by reproducing the user's exact requested story (World view toggle on,
+Highlight Singapore 2s -> Pan India 3s -> Highlight Gujarat 2s) and,
+separately, a stretched-out 30s single-scene version of the same hop to
+get past this environment's tool-round-trip-latency-vs-scene-duration gap
+(documented earlier this session) and actually capture the mid-flight
+frames. Root cause: the previous fix (world-space center interpolated
+linearly, zoom interpolated geometrically, both driven off the same raw
+progress value) had *no coordination* between "how far across the map
+we've traveled" and "how zoomed in we are" -- zoom grew large well before
+position had traveled far along its straight-line path (which happens to
+cross Africa en route from world-center to Singapore), producing a
+tightly-zoomed frame centered over the wrong continent for a real chunk of
+the animation.
+
+Explicitly framed by the user as foundational, engine-level code ("this is
+the foundation to everything we build in the future") -- discussed two
+fix directions before writing code: an ad-hoc "delay the zoom-in" schedule
+tweak (rejected -- no principled way to adapt to how far apart two scenes
+actually are; a fixed delay tuned for one long hop would misbehave on a
+short one) versus Van Wijk & Nuij's closed-form pan+zoom flight curve (the
+same algorithm behind Mapbox GL JS's `flyTo` and `d3.interpolateZoom`) --
+chosen for being derived from the actual distance/zoom-difference between
+endpoints rather than tuned by eye, so it's correct across the whole range
+of hops the engine will ever be asked to fly, not just the one case
+tested.
+
+Verified in-browser after implementing: replayed the 30s Singapore hop --
+world view -> a moderate, still-mostly-zoomed-out view already correctly
+centered over Southeast Asia (not Africa) -> zooms in tight, lands cleanly
+highlighted on Singapore. No detour through the wrong continent.
+
+### Changes
+
+**`camera.ts`**
+- New `vanWijkNuij(ux0, uy0, w0, ux1, uy1, w1, t)` -- the algorithm itself
+  ("Smooth and Efficient Zooming and Panning," IEEE InfoVis 2003), pure
+  math, no new dependency. Treats each endpoint as a world-space center
+  point plus a "view width" `w` (~ 1/zoom -- `screenWidth / (baseScaleX *
+  zoom)`, same units as the center point so the distance/width terms are
+  dimensionally consistent) and returns the combined position+width at
+  `t`. `RHO = Math.SQRT2` is the one shared shape constant (how
+  aggressively any flight flares out), not tuned per scene. A `d2 <
+  EPSILON2` branch (endpoints share the same center) falls back to a plain
+  exponential width interpolation, since the general formula divides by
+  pan distance and would blow up for a zero/near-zero one.
+- New `cameraCenterAndWidth(camera, ...)` -- a Camera's world-space center
+  point and `w`, the inverse of the `x = center*scale*zoom` relation
+  `focusOnBounds` already uses to go the other way; extracted since
+  `tweenCamera` now needs it for both `from` and `to`.
+- `tweenCamera` rewritten to compute both endpoints via
+  `cameraCenterAndWidth`, run them through `vanWijkNuij` at the (still
+  cubic-eased, per the existing "smooth start/stop" pacing) `t`, then
+  convert the resulting center+width back into `{x, y, zoom}` -- same
+  final conversion shape as the previous iteration, just fed by the new
+  arc instead of independent linear-center/geometric-zoom interpolation.
+  Signature (`screenWidth, screenHeight, baseScaleX, baseScaleY` alongside
+  `from`/`to`/`progress`) is unchanged from the prior fix, so
+  `MapCanvas.tsx`'s call site needed no changes this time.
+
+### Decisions
+- **Van Wijk & Nuij over a tuned delay/threshold heuristic.** The
+  deciding factor was reliability across *unknown future scenes*, not just
+  the one reported case: a hand-tuned "wait until X% progress before
+  zooming" schedule has no way to adapt to actual distance between two
+  points -- correct-looking for a world-spanning hop could easily look
+  wrong (unnecessary wobble) for a short one like India -> Gujarat, and
+  every future feature built on this camera engine would inherit whatever
+  constant got picked. The closed-form algorithm instead derives its
+  behavior from the real distance and zoom difference each time, so it's
+  correct by construction for both short and long hops without per-case
+  tuning -- the right bar for code explicitly called out as this
+  engine's foundation.
+- **No new dependency.** `vanWijkNuij`/`cameraCenterAndWidth` are a
+  self-contained ~50-line port of the well-documented public algorithm
+  (the same one `d3.interpolateZoom` implements), not a library import --
+  consistent with how the rest of `camera.ts` is written (pure functions,
+  zero dependencies beyond the `Camera` type itself).
+- **Verified against the user's literal reported scenario before
+  generalizing.** Rebuilt the exact story (Singapore/India/Gujarat, exact
+  durations) to confirm the scenes themselves were unaffected, then used
+  a stretched-duration version of the *same* hop to actually capture
+  frames past this environment's round-trip-latency limitation --
+  reasoned explicitly that duration doesn't change the tween's shape in
+  progress-space, only how much wall-clock time it's stretched across, so
+  the longer capture is valid evidence for the short one too.
+
+### Deferred / not yet implemented
+- None identified for this bug -- watched the full flight frame-by-frame
+  post-fix and confirmed it stays coherent throughout (recognizable,
+  correct-region geography at every sampled frame, clean landing).
+
+---
+
+## 2026-08-19 — Bug fix: scripted zoom-in briefly showed blank ocean mid-flight
+
+### Summary
+Regression from the log-space zoom-tween fix directly above, found and
+reproduced via chrome-devtools in-browser (not just inspection): a
+world-view -> Singapore scripted pan (Highlight, 20s, "Start from world
+view" on) correctly started at the full world view, but then got visibly
+stuck for most of the scene showing solid, featureless ocean zoomed in
+tight on nothing recognizable, before snapping onto Singapore correctly
+only in the last moment. Root cause: `tweenCamera`'s `zoom` had just been
+switched to geometric interpolation, but `x`/`y` were left interpolating
+linearly, unchanged. `x`/`y` and `zoom` aren't independent -- `x`/`y` are
+only meaningful *for a given zoom* (they're what keeps a specific world
+point centered at that zoom, per `focusOnBounds`'s own derivation) -- so
+once `zoom` moved geometrically while `x`/`y` stayed linear, the two curves
+diverged mid-flight: at some progress, `zoom` had already grown large while
+`x`/`y` were still only partway through their straight-line journey,
+landing the camera zoomed in tight on whatever arbitrary world coordinate
+that mismatched pair produced -- open ocean, not Singapore. Only at
+progress 1 do both curves land back on the correct, consistent endpoint,
+which is why it "snapped" correctly only at the very end.
+
+Reproduction was not immediate -- an early attempt (edit-in-place clicks
+between duration changes) accidentally triggered `jumpToScene` dispatches
+that muddied the camera's prior position, making the first repro attempt
+ambiguous. Redone cleanly on a fresh reload (toggle on, pick Highlight +
+Singapore via the search/pick flow only, Add to Timeline once, Play once,
+20s duration to survive tool round-trip latency) before trusting the
+diagnosis.
+
+### Changes
+
+**`camera.ts`**
+- `tweenCamera` signature widened: now also takes `screenWidth`,
+  `screenHeight`, `baseScaleX`, `baseScaleY` (every other function in this
+  file besides `viewportWorldBounds` previously needed only `Camera`
+  values -- this one now needs to cross into world-space too, same
+  reasoning `viewportWorldBounds`'s own comment already gives for why it's
+  the exception).
+- Interpolation reworked: instead of lerping `x`/`y` and `zoom`
+  independently, it now (a) computes each endpoint's world-space center
+  point (`(screenWidth/2 - camera.x) / (baseScaleX*camera.zoom)`, the
+  inverse of the relation `focusOnBounds` already uses to go the other
+  way), (b) interpolates that center point linearly and `zoom`
+  geometrically (unchanged from the prior fix), then (c) *re-derives*
+  `x`/`y` from the interpolated center + the interpolated zoom, at every
+  frame -- not just the two endpoints. Keeps position and zoom
+  mathematically consistent throughout the whole tween, not only at
+  progress 0 and 1.
+
+**`MapCanvas.tsx`**
+- The one call site (`applyCameraTransform`'s `scriptedPan` branch) updated
+  to pass `viewW, viewH, baseScaleX, baseScaleY` through -- all four were
+  already in scope in that closure for other reasons.
+
+### Decisions
+- **Interpolate the world-space center + zoom, not raw x/y + zoom.** The
+  minimal-looking alternative (revert zoom to linear, undoing the "long
+  journey" fix) was rejected -- it would resurrect the earlier reported
+  problem. Deriving x/y from an interpolated center point is the same
+  center-and-zoom decomposition `focusOnBounds` already uses to *compute*
+  a camera in the first place, just re-run every animation frame instead
+  of only once per endpoint -- consistent with the rest of this file's
+  approach, not a new pattern.
+- **Verified via a clean re-repro, not trusted from the first (contaminated)
+  attempt.** The first in-browser attempt mixed in edit-in-place clicks
+  that (correctly, per 6.3.1's design) also trigger `jumpToScene`, which
+  dispatches its own scripted glide -- muddying which dispatch actually
+  produced the observed frame. Reloaded and repeated the repro touching
+  only Add-to-Timeline + Play before concluding the diagnosis was right.
+
+### Deferred / not yet implemented
+- None identified -- the full world-view-to-Singapore flight was watched
+  frame-by-frame after the fix and confirmed coherent throughout (crosses
+  recognizable geography, lands correctly, no blank-ocean jump).
+
+---
+
+## 2026-08-19 — Bug fix: scripted zoom-in felt like a "long journey" (linear vs. geometric zoom tween)
+
+### Summary
+Follow-up to the `MAX_ZOOM` fix above. User reported the world-view-to-
+Singapore scripted pan still felt like a long, stuck journey even at a
+short duration. Diagnosed rather than just re-tuning numbers: the user's
+first instinct was to raise `MIN_ZOOM` (the world-view floor, currently 1),
+but that would redefine what "world view" means everywhere in the app
+(world-pan branch, the startFromWorldView toggle) -- rejected as the wrong
+fix. Actual cause was `camera.ts`'s `tweenCamera` interpolating `zoom`
+*linearly* between endpoints. Zoom is a multiplicative quantity, not a
+linear one -- 1->2 is a full perceptual doubling, 500->575 is barely
+perceptible -- so a linear lerp from zoom 1 to zoom ~575 (Singapore, post
+the MAX_ZOOM fix above) rushes through the dramatic early doublings almost
+instantly, then spends most of the scene's duration crawling through huge
+raw-zoom numbers that barely look different from each other. That's the
+"long journey" feeling, independent of `MIN_ZOOM`/`MAX_ZOOM`'s actual
+values or the scene's authored duration.
+
+### Changes
+
+**`camera.ts`**
+- `tweenCamera`'s `zoom` interpolation changed from linear
+  (`from.zoom + (to.zoom - from.zoom) * t`) to geometric/log-space
+  (`from.zoom * (to.zoom / from.zoom) ** t`) -- `x`/`y` stay linear
+  (screen-space position genuinely is linear, unaffected by this). Keeps
+  the *perceived* zoom rate constant across the whole scripted glide
+  regardless of how large the gap between start and end zoom is. The
+  existing ease-in-out cubic `t` curve is unchanged, still applied on top.
+  Fixes this for every scripted pan automatically (any scene, any zoom
+  range), not just the Singapore case that surfaced it.
+
+### Decisions
+- **Fixed the interpolation, not `MIN_ZOOM`.** Explicitly rejected raising
+  `MIN_ZOOM` per the discussion above -- it's the definition of "world
+  view" app-wide (see the startFromWorldView toggle and world-pan branch
+  added earlier this session), not a tunable "how far the journey feels"
+  knob. The reported symptom was a tween-shape problem, not a range
+  problem.
+
+### Deferred / not yet implemented
+- Not yet independently verified in-browser this session -- user is
+  testing directly.
+
+---
+
 ## 2026-08-19 — Bug fix: MAX_ZOOM (16) far too low to frame small countries
 
 ### Summary

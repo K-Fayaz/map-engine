@@ -648,7 +648,7 @@ export function MapCanvas() {
           if (scriptedPan) {
             const elapsed = performance.now() - scriptedPan.startTime;
             const progress = Math.min(1, elapsed / scriptedPan.durationMs);
-            current = tweenCamera(scriptedPan.from, scriptedPan.to, progress);
+            current = tweenCamera(scriptedPan.from, scriptedPan.to, progress, viewW, viewH, baseScaleX, baseScaleY);
             if (progress >= 1) {
               target = scriptedPan.to;
               scriptedPan = null;
