@@ -2,7 +2,7 @@ import { useRef } from "react";
 import "./Timeline.css";
 import { useInteractionStore } from "./interactionStore";
 import { useSceneStore } from "./sceneStore";
-import { describeAnimation, sceneZoomPercent } from "./scenes";
+import { describeAnimation, sceneAnimationValue, sceneZoomPercent, type Scene } from "./scenes";
 import { TimelineRuler } from "./TimelineRuler";
 import { PIXELS_PER_SECOND } from "./timelineLayout";
 
@@ -50,9 +50,13 @@ export function Timeline() {
     dragRef.current = null;
   };
 
-  const nameForScene = (targetEntityId?: string): string => {
-    if (!targetEntityId) return "World";
-    return entities.find((entity) => entity.id === targetEntityId)?.name ?? targetEntityId;
+  // Hold has no targetEntityId either (same as a world pan), but "World" as
+  // its label would be actively misleading -- it doesn't pan anywhere, it
+  // rests wherever the previous scene left off.
+  const nameForScene = (scene: Scene): string => {
+    if (sceneAnimationValue(scene) === "hold") return "—";
+    if (!scene.targetEntityId) return "World";
+    return entities.find((entity) => entity.id === scene.targetEntityId)?.name ?? scene.targetEntityId;
   };
 
   return (
@@ -101,14 +105,15 @@ export function Timeline() {
                     e.stopPropagation();
                     deleteScene(scene.id);
                   }}
-                  aria-label={`Delete ${nameForScene(scene.targetEntityId)} scene`}
+                  aria-label={`Delete ${nameForScene(scene)} scene`}
                 >
                   ×
                 </button>
-                <span className="timeline-entity">{nameForScene(scene.targetEntityId)}</span>
+                <span className="timeline-entity">{nameForScene(scene)}</span>
                 <span className="timeline-animation">{describeAnimation(scene)}</span>
                 <span className="timeline-duration">
-                  {scene.duration}s · {sceneZoomPercent(scene)}%
+                  {scene.duration}s
+                  {sceneAnimationValue(scene) !== "hold" && ` · ${sceneZoomPercent(scene)}%`}
                 </span>
                 <div
                   className="timeline-resize-handle"

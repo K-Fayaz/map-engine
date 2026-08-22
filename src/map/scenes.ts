@@ -53,20 +53,33 @@ export interface Scene {
 // over-solve," that's a more advanced scripting use case (multiple
 // highlights within one already-framed shot) worth building only if real
 // use actually asks for it.
-export type AnimationValue = "pan" | "highlight" | "clearHighlight";
+// "Hold" (added after 6.1-6.3): an intentionally empty Scene -- no camera,
+// no actions -- that just occupies `duration` seconds doing nothing. Needed
+// zero changes to actionRegistry/dispatchScene/sceneStore to support: an
+// empty Scene already dispatches as a no-op through the existing generic
+// mechanism, and playFrom's hold-timer already waits out a Scene's duration
+// regardless of what it did. The camera (and whatever's currently
+// highlighted) simply stays wherever the previous scene left it -- "rest
+// here for a while" -- which is why it only makes sense with at least one
+// scene already in the timeline; the Instruction Builder disables the
+// option entirely otherwise (see InstructionBuilder.tsx), rather than this
+// file trying to express "not the first scene" as part of the animation
+// vocabulary itself.
+export type AnimationValue = "pan" | "highlight" | "clearHighlight" | "hold";
 
 export const ANIMATION_OPTIONS: { value: AnimationValue; label: string }[] = [
   { value: "pan", label: "Pan" },
   { value: "highlight", label: "Highlight" },
   { value: "clearHighlight", label: "Clear Highlight" },
+  { value: "hold", label: "Hold" },
 ];
 
-// Every V1 animation except a target-less "Pan" (pans out to the world)
-// needs a specific entity picked. Exported so the Instruction Builder can
-// disable "Add to Timeline" without needing to call buildScene just to find
-// out it would return null.
+// Every V1 animation except a target-less "Pan" or "Hold" (neither touches
+// a specific entity) needs a specific entity picked. Exported so the
+// Instruction Builder can disable "Add to Timeline" without needing to call
+// buildScene just to find out it would return null.
 export function animationRequiresEntity(animation: AnimationValue): boolean {
-  return animation !== "pan";
+  return animation !== "pan" && animation !== "hold";
 }
 
 // Pure mapping from the Instruction Builder's flat form state (one entity,
@@ -87,6 +100,10 @@ export function buildScene(
   zoomPercent: number = 100,
 ): Scene | null {
   if (animationRequiresEntity(animation) && !entity) return null;
+
+  if (animation === "hold") {
+    return { id: crypto.randomUUID(), duration, actions: [] };
+  }
 
   const actions: SceneAction[] = [];
   let camera: CameraAction | undefined;
@@ -122,6 +139,10 @@ export function buildScene(
 // 14's "store what the user wants to happen, not raw renderer state"), not
 // which dropdown option produced it.
 export function sceneAnimationValue(scene: Scene): AnimationValue {
+  // No camera and no actions is exactly (and only) what buildScene's
+  // "hold" branch produces -- every other branch always sets one or the
+  // other.
+  if (!scene.camera && scene.actions.length === 0) return "hold";
   const hasHighlight = scene.actions.some((action) => action.type === "highlight");
   // "highlight" always attaches a camera.pan now (see buildScene), so a
   // scene with both a camera.pan and a highlight action is just
@@ -144,7 +165,6 @@ export function sceneZoomPercent(scene: Scene): number {
 }
 
 export function describeAnimation(scene: Scene): string {
-  if (!scene.camera && scene.actions.length === 0) return "—";
   const value = sceneAnimationValue(scene);
   return ANIMATION_OPTIONS.find((option) => option.value === value)?.label ?? "—";
 }

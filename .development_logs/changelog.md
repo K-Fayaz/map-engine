@@ -5,6 +5,110 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-19 — New "Hold" animation: rest the camera at the previous scene's end
+
+### Summary
+User-requested new animation option: "Hold" -- rests the camera (and
+whatever's currently highlighted) exactly where the *previous* scene left
+it, for a chosen duration, with no camera movement of its own. Only makes
+sense with at least one scene already in the timeline (nothing to "rest
+after" otherwise), so the Instruction Builder disables the option until
+one exists. Since it targets neither an entity nor a camera framing,
+both the Entity and Zoom (%) fields are disabled outright while it's
+selected -- confirmed with the user that Zoom (%) should be disabled
+alongside Entity, for the same reason (it only ever scales a camera pan's
+framing, and Hold has no camera action at all).
+
+Notably needed **zero changes** to `actionRegistry.ts`/`sceneStore.ts` --
+a nice validation of `docs/phase_6_arch.md`'s "adding a new animation type
+should mean adding a mapping, not touching the dispatcher" goal: an empty
+Scene (`camera: undefined`, `actions: []`) already dispatches as a no-op
+through the existing generic mechanism, and `playFrom`'s hold-timer
+already waits out a Scene's `duration` regardless of what happened during
+it -- "Hold" only needed a new `buildScene`/`sceneAnimationValue` mapping
+and Instruction Builder UI gating, nothing in the playback engine itself.
+
+Verified in-browser: with the timeline empty, "Hold" is disabled in the
+dropdown (confirmed via the actual DOM `<option disabled>` state, not just
+visually); after adding a "Pan to World" scene, "Hold" becomes selectable;
+selecting it disables both Entity ("Not applicable for Hold" placeholder)
+and Zoom (%); added a 5s Hold scene, which correctly displays entity "—",
+no zoom% (just "5s", not "5s · 100%"), on its Timeline block.
+
+### Changes
+
+**`scenes.ts`**
+- `AnimationValue` gains `"hold"`; `ANIMATION_OPTIONS` gains `{value:
+  "hold", label: "Hold"}`.
+- `animationRequiresEntity`: now `animation !== "pan" && animation !==
+  "hold"` (both are entity-less, for different reasons -- pan defaults to
+  the world, hold doesn't touch the camera at all).
+- `buildScene`: new early-return branch for `"hold"` -- `{id, duration,
+  actions: []}`, no `camera`, no `targetEntityId`. Deliberately the
+  simplest possible Scene shape, not a special "no-op" action type
+  registered anywhere -- the dispatcher already no-ops on an empty
+  scene.
+- `sceneAnimationValue`: new first check, `!scene.camera &&
+  scene.actions.length === 0` -> `"hold"` -- this exact shape is now
+  reserved for Hold (previously unreachable/defensive-only via
+  `buildScene`, so no other Scene could have produced it).
+- `describeAnimation`: dropped its old `"—"` fallback for empty scenes --
+  that shape now always means `"hold"`, which resolves to a real label via
+  `sceneAnimationValue` instead.
+
+**`InstructionBuilder.tsx`**
+- Animation dropdown's "Hold" `<option>` gets `disabled={scenes.length ===
+  0}`.
+- New `isHold` flag; Entity's input (and its selected-entity display) and
+  the Zoom (%) input are both disabled while `isHold`, with the Entity
+  field's placeholder swapped to "Not applicable for Hold". Existing
+  `selectedEntity`/`zoomPercent` state isn't forcibly cleared when
+  switching to Hold -- harmless either way, since `buildScene("hold", ...)`
+  ignores both regardless of what's in them.
+
+**`Timeline.tsx`**
+- `nameForScene` (previously keyed only on `targetEntityId`, defaulting to
+  "World" when absent) now takes the whole `Scene` and checks
+  `sceneAnimationValue(scene) === "hold"` first, returning `"—"` --
+  otherwise a Hold block would misleadingly show "World" (same
+  `targetEntityId === undefined` shape a world pan has).
+  `sceneAnimationValue`/`sceneZoomPercent` for a Hold entity are otherwise
+  driven by this reverse-mapping, not a stored flag.
+- The duration/zoom line now omits the `· {zoomPercent}%` suffix for Hold
+  scenes (`sceneAnimationValue(scene) !== "hold"` gates it) -- showing a
+  meaningless "100%" for a scene with no camera action would be confusing
+  as noise, not a stray leftover.
+
+### Decisions
+- **Empty Scene, not a registered no-op action type.** Discussed
+  implicitly by how naturally it fell out of the existing architecture:
+  `dispatchScene`'s `if (scene.camera) ...` / `for (const action of
+  scene.actions)` already handle "nothing to do" for free. Adding a
+  `registerAction("hold", () => {})` entry was considered and rejected as
+  unnecessary indirection -- there's no camera/action *intent* to express,
+  so there's nothing for a handler to do that an absent camera/empty
+  actions array doesn't already achieve.
+- **Zoom (%) disabled alongside Entity, confirmed explicitly with the
+  user** rather than assumed -- same reasoning as Entity (meaningless
+  without a camera action), but flagged as a real question since the user
+  had only mentioned Entity by name.
+- **Gated at the form (dropdown), not in the data model.** `AnimationValue`
+  itself doesn't know "hold requires scenes.length > 0" -- that's a
+  UI-level authoring constraint (checked in `InstructionBuilder.tsx`
+  against `sceneStore`'s live `scenes`), not something `animationRequiresEntity`
+  or `buildScene` encode, since a Hold Scene itself is perfectly
+  well-formed data regardless of its position in an array.
+
+### Deferred / not yet implemented
+- The edge case flagged during design discussion: deleting every scene
+  before a Hold (once reorder/delete-aware reindexing exists) could leave
+  it sitting at index 0 with nothing to rest from, silently reintroducing
+  camera non-determinism for that one case. Explicitly deferred by the
+  user ("we will see that edge case later") -- not fixed now, no reorder
+  feature exists yet to even trigger it today.
+
+---
+
 ## 2026-08-19 — Investigated: WebGL "Insufficient buffer size" console warning
 
 ### Summary

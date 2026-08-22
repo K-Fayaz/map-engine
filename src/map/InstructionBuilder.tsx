@@ -62,6 +62,11 @@ export function InstructionBuilder() {
   // Only "Pan" can go without an entity (pans out to the world) -- every
   // other animation needs one picked before a Scene can be built.
   const canAdd = !animationRequiresEntity(animation) || selectedEntity !== null;
+  // "Hold" doesn't target an entity or a camera framing at all -- it's a
+  // pure "rest here for a while" instruction -- so both fields are
+  // disabled outright while it's selected, not just optional like "Pan"'s
+  // target-less case.
+  const isHold = animation === "hold";
 
   // Discussed and chosen over a full reset or no reset at all: only the
   // entity clears after adding, animation/duration carry over. Matches the
@@ -149,7 +154,14 @@ export function InstructionBuilder() {
           onChange={(e) => setAnimation(e.target.value as typeof animation)}
         >
           {ANIMATION_OPTIONS.map((option) => (
-            <option key={option.value} value={option.value}>
+            <option
+              key={option.value}
+              value={option.value}
+              // "Hold" rests the camera at whatever the *previous* scene
+              // left it at -- meaningless with no previous scene, so it's
+              // disabled until the timeline already has at least one.
+              disabled={option.value === "hold" && scenes.length === 0}
+            >
               {option.label}
             </option>
           ))}
@@ -159,7 +171,7 @@ export function InstructionBuilder() {
       </div>
       <div>
         <span className="ib-field-label">Entity</span>
-        {selectedEntity ? (
+        {selectedEntity && !isHold ? (
           <div className="ib-input ib-selected-row">
             <span>
               {selectedEntity.name} <span className="ib-badge">{selectedEntity.type}</span>
@@ -172,16 +184,19 @@ export function InstructionBuilder() {
           <input
             type="text"
             placeholder={
-              animation === "pan"
-                ? "Search countries, states... (leave empty to pan to world)"
-                : "Search countries, states..."
+              isHold
+                ? "Not applicable for Hold"
+                : animation === "pan"
+                  ? "Search countries, states... (leave empty to pan to world)"
+                  : "Search countries, states..."
             }
-            value={query}
+            value={isHold ? "" : query}
             onChange={(e) => setQuery(e.target.value)}
             className="ib-input"
+            disabled={isHold}
           />
         )}
-        {!selectedEntity && results.length > 0 && (
+        {!selectedEntity && !isHold && results.length > 0 && (
           <ul className="ib-list">
             {results.map((entity) => (
               <li
@@ -216,6 +231,7 @@ export function InstructionBuilder() {
           value={zoomPercent}
           onChange={(e) => setZoomPercent(Number(e.target.value))}
           className="ib-input"
+          disabled={isHold}
         />
       </div>
       <div className="ib-btn-row">
