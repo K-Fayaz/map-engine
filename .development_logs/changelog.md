@@ -5,6 +5,244 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-23 — Deterministic video export (Phases A-D) + two color bugs fixed
+
+### Summary
+User-requested: a real video export feature, built against a design doc
+(`.development_logs/export.md`) that specified the goal (export must render
+every frame deterministically from the scene/timeline data, completely
+independent of live canvas playback -- no `requestAnimationFrame`, no
+wall-clock dependence, no dropped/frozen frames regardless of machine speed)
+but stopped mid-sentence right after introducing a `resolveAt(t)` signature,
+with everything past that (real semantics, offscreen rendering, frame
+extraction, encoding, UI) undesigned. Planned in four phases with the user
+before writing any code, then implemented and verified phase by phase,
+checking in after each one rather than building the whole thing blind.
+
+Two rounds of read-only investigation up front confirmed the groundwork:
+`camera.ts`'s `tweenCamera`/`focusOnBounds` were already pure and seekable
+(explicit `progress: 0..1`, no DOM/wall-clock dependency) -- directly
+reusable. Live playback itself was not seekable (`sceneStore.playFrom` uses
+real `setTimeout`s; `MapCanvas.tsx`'s ticker computes tween progress from
+`performance.now()`) -- a new resolution layer was needed. `MapCanvas.tsx`
+was one ~900-line closure conflating Pixi lifecycle, scene-graph
+construction, and camera application -- needed splitting so export could
+reuse the same rendering logic as live instead of a diverging copy.
+
+**Decisions locked in with the user before implementation**: ffmpeg bundled
+as a Tauri sidecar (not required pre-installed); frames streamed as raw RGBA
+to a persistent ffmpeg process's stdin (no intermediate PNG sequence); no
+audio in scope; output fixed at 1920x1080 @ 30fps, H.264/MP4.
+
+### Changes
+
+**Phase A -- `resolveAt(t)` (new `src/map/timelineResolver.ts`)**
+- Pure function: given `Scene[]` + an explicit timestamp `t`, returns the
+  camera + highlighted entity at that instant. Precomputes each scene's
+  start/end camera in one O(scenes) pass (a `"pan"` scene resolves via
+  `focusOnBounds`; a scene with no camera action -- Hold, or a bare
+  `clearHighlight` -- inherits the previous scene's resting camera, for
+  free, matching Hold's documented semantics), then for any `t` locates the
+  containing scene and calls the existing `tweenCamera` unmodified. Reuses
+  `focusOnBounds`/`tweenCamera`/`computeFramingBounds` directly rather than
+  going through `interactionStore`/`actionRegistry`'s event-based
+  fire-and-forget handlers, which are shaped for live incremental dispatch,
+  not "give me the value at time t."
+- Added Vitest (no test runner existed before this) + jsdom (needed since
+  `render.ts` pulls in `pixi.js`, which touches `navigator` at import time).
+  16 unit tests: pans, highlights, holds, `cameraStart` both modes, zoom%,
+  antimeridian framing, out-of-range/boundary `t`.
+- Verified against live playback: a temporary debug hook in `MapCanvas.tsx`
+  (added, used, fully removed -- confirmed zero diff after) compared
+  `resolveAt`'s output against the actual on-screen camera during a real
+  "Pan to France, 20s, start from world view" playback. Matched bit-for-bit
+  on one sample; a second sample differed by ~1e-5 relative, traced to the
+  debug hook itself taking a second, slightly later `performance.now()`
+  reading than the live tween already used -- not a resolver defect.
+
+**Phase B0 -- extracted shared rendering (new `src/map/worldRenderer.ts`)**
+- `buildWorldScene()` now owns all layer construction (land, countries,
+  states, rivers, lakes, labels, highlight overlay), `drawHighlights`,
+  `applyCamera`, and the LOD fill logic (`setResolution`, formerly
+  `applyFill`) -- extracted out of `MapCanvas.tsx`'s closure. Deliberately
+  has zero dependency on `interactionStore` -- `drawHighlights`/`applyCamera`
+  take explicit params instead of reading global state, so both live
+  playback and export call the identical rendering code, not two diverging
+  copies.
+- `MapCanvas.tsx` re-wired to consume `worldScene.*` -- pointer handling,
+  LOD debounce scheduling, label/state declutter, `scriptedPan`/ticker all
+  stay there unchanged in behavior, now reading/writing through the
+  returned `WorldScene` object.
+- Verified via a full manual regression pass on the live map (chrome-devtools
+  automation): wheel-zoom + LOD swap, hover, click-select highlighting, the
+  state-borders toggle, Play (scripted pan+highlight), jump-to-scene/
+  edit-in-place -- all identical to pre-refactor behavior. No new console
+  errors, only the same pre-existing warnings already documented above.
+
+**Phase B -- offscreen rendering spike**
+- Confirmed (via a throwaway, since-deleted spike module) that a Pixi
+  `Application` initialized against a `<canvas>` never attached to the DOM
+  renders correctly. Found and fixed one real gap in the plan along the
+  way: `renderer.extract.pixels(app.stage)` extracts the target's full
+  bounding box, not the viewport -- for the whole unbounded world container
+  this returned a ~14709x7324 buffer instead of the intended 1920x1080.
+  Fixed by passing an explicit `frame: new Rectangle(0, 0, width, height)`.
+- Rendered a real frame (Pan+Highlight to Japan, offscreen, 10m resolution)
+  and visually confirmed it, then cross-checked framing/orientation against
+  live playback of the same country.
+
+**Phase C -- ffmpeg sidecar + streaming frame loop**
+- Added `tauri-plugin-shell` (Rust + `@tauri-apps/plugin-shell`). Bundled
+  the system's ffmpeg binary as the sidecar for local dev/testing
+  (`src-tauri/binaries/ffmpeg-x86_64-unknown-linux-gnu`, gitignored) -- a
+  real, working binary for this machine, but explicitly **not** yet a
+  portable static binary for distribution to other users' machines; that
+  packaging work is still open.
+- New `src-tauri/src/export.rs`: `start_export` spawns the sidecar via
+  `ShellExt::sidecar` with piped stdin; `write_frame` (sync command, so
+  Tauri runs it off the async runtime thread -- a slow write naturally
+  backpressures without stalling anything else) writes to the child's
+  stdin; `finish_export` (async) drops the child (closing stdin -> EOF ->
+  ffmpeg finalizes and exits on its own, never killed) and awaits its
+  `Terminated` event; `cancel_export` kills the process and removes the
+  partial output file. No new capability entries needed -- the frontend
+  never calls the shell plugin directly, only Rust does internally.
+- New `src/map/exportPipeline.ts`: `runExportLoop` (pure orchestration --
+  frame timing, cancellation, progress, UI-yielding, fully unit tested with
+  fakes, zero Pixi/Tauri involved) wired to `runExport` (real offscreen
+  Pixi rendering via `buildWorldScene` + real `invoke` calls). 6 unit tests
+  covering frame ordering, cancellation, no-overlap sequencing, UI-yield
+  calls.
+- Verified the encoding mechanics directly against the real sidecar binary
+  (bypassing the GUI, which wouldn't launch in this dev sandbox -- see
+  Decisions): streamed 30 synthetic RGBA frames (a moving bar, so
+  frame order/positioning is verifiable) through the exact ffmpeg args
+  `export.rs` uses, produced a valid H.264 MP4 (`ffprobe`-confirmed
+  codec/resolution/fps/duration), extracted a middle frame and confirmed
+  content + RGBA byte-order were correct.
+
+**Phase D -- UI wiring**
+- New `src/map/exportStore.ts` (zustand, mirrors `sceneStore`'s existing
+  separation from `interactionStore`): `status`/`currentFrame`/
+  `totalFrames`/`errorMessage`; `startExport` opens a native "Save As"
+  dialog (added `tauri-plugin-dialog`, Rust + JS, `dialog:default`
+  capability) rather than a fixed path, captures `showStateBorders`/
+  `entities` as one-time snapshots from `interactionStore` (not a live
+  subscription -- export must depend only on the story definition, not on
+  anything still changeable on screen), then drives `exportPipeline.ts`.
+- Export button + "Frame N / total" progress + Cancel added to
+  `Timeline.tsx`/`Timeline.css`, matching the existing Play/Pause toggle's
+  exact convention (direct store-bound `<button>`, disabled when
+  `scenes.length === 0` or already exporting).
+- Verified live in the browser dev environment (real Tauri app wouldn't
+  launch here, see Decisions): confirmed by grep that export code never
+  imports/calls `sceneStore`; built a scene, clicked Export -- `save()`
+  correctly threw (no `__TAURI_INTERNALS__` outside the real webview), the
+  error was caught and surfaced in the UI rather than an unhandled
+  rejection (found and fixed a real gap where `save()` was originally
+  outside the try/catch -- would have been a genuine production bug, not
+  just an artifact of this test environment), the app didn't crash, the
+  live canvas didn't move, and Play still worked immediately after.
+
+**Post-Phase-D bug fixes, found once the user ran the real app**
+
+- **`write_frame` IPC signature mismatch.** First real-app run failed
+  immediately: `invalid args 'bytes' for command 'write_frame': ... the IPC
+  call used a bytes payload`. `exportPipeline.ts` passes the frame's
+  `Uint8Array` directly as `invoke`'s whole `args` (Tauri's fast raw-binary
+  IPC path, not JSON-encoded), but `write_frame` had declared a named
+  `bytes: Vec<u8>` parameter, which only ever binds against a JSON object
+  key -- a raw body has none. Fixed by taking `tauri::ipc::Request<'_>`
+  instead and reading `request.body()`'s `InvokeBody::Raw` variant. No JS
+  change needed.
+- **Ocean rendered solid black in the export.** `extract.pixels(app.stage)`
+  renders the target into a *fresh, separately-cleared* render texture --
+  it does not reuse the Application's configured `backgroundColor`, which
+  only ever applies when rendering straight to the screen (which live
+  playback always does, and export, until now, never did). The ocean has
+  no actual `Graphics` shape covering it -- it's only ever visible via the
+  renderer's clear color -- so it extracted as transparent black, and
+  dropping alpha for the video encode turned that into solid black. Land/
+  borders/highlight extracted correctly since those are real drawn shapes.
+  Fixed by passing `clearColor: OCEAN_COLOR` to the `extract.pixels` call
+  in `exportPipeline.ts`. Verified visually via the real code path (not a
+  mock) before telling the user it was fixed.
+- **Exported color didn't match the live app (teal looked shifted/washed
+  out) even after the black-ocean fix.** Root-caused via a controlled
+  round-trip test (encode a known RGB color through the real sidecar
+  binary, decode it back, compare) rather than guessing: the export
+  resolution is HD (1920x1080), and the ffmpeg command tagged no color
+  matrix at all. Untagged HD video leaves players to guess which RGB<->YUV
+  matrix was used -- most players (VLC included) guess BT.709 for anything
+  HD-sized, but ffmpeg's default conversion during the pixel-format change
+  actually used BT.601 coefficients. That mismatch is what shifted the
+  color in VLC despite the frames being correct going in -- it happened to
+  round-trip fine through ffmpeg's *own* decoder (self-consistent default
+  on both ends), which is why it wasn't caught until the user actually
+  played the file in VLC. Confirmed with a second round-trip test that
+  tagging alone, without also forcing the real conversion matrix, made it
+  *worse* (mislabels data that wasn't actually converted that way) --
+  both have to agree. Fixed in `export.rs` by adding `-vf
+  scale=out_color_matrix=bt709` (forces the actual RGB->YUV conversion)
+  plus `-colorspace bt709 -color_primaries bt709 -color_trc bt709`
+  (signals it correctly so a compliant player decodes with the matching
+  matrix instead of guessing). Verified via `ffprobe` that the output file
+  now carries the correct embedded VUI tags
+  (`color_space=bt709`/`color_primaries=bt709`/`color_transfer=bt709`).
+
+### Decisions
+- **Two small, independent consumers of `Scene[]` data (`resolveAt` +
+  `actionRegistry`), not one shared dispatcher.** `actionRegistry.ts`'s
+  contract is fire-and-forget by design (its own header comment says so)
+  and entangled with `interactionStore`'s pub/sub -- bending it to also
+  support "compute a value at time t, no side effects" risked destabilizing
+  live playback for the sake of export. Matches the design doc's own
+  framing of Live Player and Export Engine as two consumers of one source
+  of truth.
+- **`worldRenderer.ts`'s extraction was scoped as its own reviewable step
+  (Phase B0), not folded silently into export work** -- it's the one piece
+  of this session that touched already-shipped, working rendering code, so
+  it got its own full manual regression pass before anything export-specific
+  was built on top of it.
+- **Offscreen rendering always builds at the highest-detail (10m)
+  resolution, unchunked, once.** Live's chunked LOD swap exists purely to
+  keep an interactive rAF loop responsive; that doesn't apply to a
+  non-interactive, deterministic export.
+- **Raw RGBA streamed to ffmpeg's stdin, not a PNG sequence to disk** --
+  locked in with the user during planning, before Phase C started. No
+  per-frame disk I/O, no temp-file cleanup, natural backpressure via a
+  blocking stdin write.
+- **`showStateBorders`/`entities` captured once at Export-click time, not
+  read live during the run.** `showStateBorders` isn't part of Scene data,
+  so "whatever it was when Export was clicked" is the only sensible source
+  -- reading it live would make output depend on something still changeable
+  on screen mid-export.
+- **Real end-to-end verification (actual file, actual playback) deferred
+  to the user's own machine, not faked or skipped silently.** This
+  sandbox's Tauri app fails at OS load time with a `libpthread`/glibc
+  symbol error from a snap-vs-system conflict in its WebKitGTK stack --
+  unrelated to any code in this session (no linking/rpath was touched) and
+  present before this work started. No `xdotool`/`scrot` either, so even a
+  successful launch couldn't have been driven/screenshotted here. Every
+  phase was instead verified as deeply as this environment allowed (unit
+  tests, direct ffmpeg-binary tests, browser-based Pixi/rendering checks,
+  live-playback cross-checks) and the gap was flagged explicitly rather
+  than glossed over -- which is exactly what surfaced both color bugs above
+  the moment the user tried the real app.
+
+### Deferred / not yet implemented
+- **A real, portable, statically-linked ffmpeg sidecar for distribution.**
+  The bundled binary is currently a copy of this dev machine's system
+  ffmpeg -- works here, not something that should ship to end users.
+  Per-platform static builds are real, separate packaging work.
+- **Output resolution/FPS are fixed** (1920x1080 @ 30fps), not yet
+  user-configurable.
+- **Vertical/other aspect ratios, audio, codec/quality options** -- none
+  in scope for this pass; audio in particular has no data model anywhere
+  in the app yet.
+
+---
+
 ## 2026-08-19 — Bug fix: stale highlight carried over into a fresh replay
 
 ### Summary

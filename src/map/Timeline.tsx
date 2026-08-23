@@ -2,6 +2,7 @@ import { useRef } from "react";
 import "./Timeline.css";
 import { useInteractionStore } from "./interactionStore";
 import { useSceneStore } from "./sceneStore";
+import { useExportStore } from "./exportStore";
 import { describeAnimation, sceneAnimationValue, sceneZoomPercent, type Scene } from "./scenes";
 import { TimelineRuler } from "./TimelineRuler";
 import { PIXELS_PER_SECOND } from "./timelineLayout";
@@ -22,6 +23,14 @@ export function Timeline() {
   const startFromWorldView = useSceneStore((state) => state.startFromWorldView);
   const setStartFromWorldView = useSceneStore((state) => state.setStartFromWorldView);
   const { entities } = useInteractionStore();
+
+  const exportStatus = useExportStore((state) => state.status);
+  const exportCurrentFrame = useExportStore((state) => state.currentFrame);
+  const exportTotalFrames = useExportStore((state) => state.totalFrames);
+  const exportErrorMessage = useExportStore((state) => state.errorMessage);
+  const startExport = useExportStore((state) => state.startExport);
+  const cancelExport = useExportStore((state) => state.cancelExport);
+  const isExporting = exportStatus === "exporting";
   // Floor of 60s so the ruler still shows a full minute of ticks with no
   // scenes yet, instead of collapsing to nothing.
   const totalDurationSeconds = Math.max(60, scenes.reduce((sum, scene) => sum + scene.duration, 0));
@@ -84,6 +93,38 @@ export function Timeline() {
         />
         Start from world view
       </label>
+      {/* Deliberately calls startExport directly, never sceneStore.play() --
+          export renders from the scene data independently of the live
+          canvas, which must never start playing just because Export was
+          clicked (see the video-export plan). */}
+      <div className="timeline-export-row">
+        <button
+          type="button"
+          className="timeline-export-btn"
+          onClick={() => startExport(scenes, startFromWorldView)}
+          disabled={scenes.length === 0 || isExporting}
+        >
+          Export
+        </button>
+        {isExporting && (
+          <>
+            <span className="timeline-export-progress">
+              {exportTotalFrames > 0
+                ? `Frame ${exportCurrentFrame} / ${exportTotalFrames}`
+                : "Starting…"}
+            </span>
+            <button type="button" className="timeline-export-cancel" onClick={cancelExport}>
+              Cancel
+            </button>
+          </>
+        )}
+        {exportStatus === "done" && <span className="timeline-export-status">Export complete</span>}
+        {exportStatus === "error" && (
+          <span className="timeline-export-status timeline-export-status-error">
+            Export failed{exportErrorMessage ? `: ${exportErrorMessage}` : ""}
+          </span>
+        )}
+      </div>
       <TimelineRuler totalDurationSeconds={totalDurationSeconds} />
       {scenes.length === 0 ? (
         <div className="timeline-empty">No scenes yet -- build one in the Instruction Builder.</div>
