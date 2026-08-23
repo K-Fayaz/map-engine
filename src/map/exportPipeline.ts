@@ -108,7 +108,19 @@ export async function runExport(
   let cancelled = false;
 
   const renderFrame = (t: number): Uint8Array => {
-    const resolved = resolveAt(scenes, entities, t, width, height, scene.baseScaleX, scene.baseScaleY, MAX_ZOOM, cameraStart);
+    // scene.viewW/viewH (the letterboxed, contain-fitted world frame),
+    // not the raw canvas width/height -- focusOnBounds/clampCamera/
+    // tweenCamera (inside resolveAt) center and clamp relative to whatever
+    // "screen" dimensions they're given, and applyCamera below separately
+    // adds scene.letterboxX/Y on top. Passing the raw canvas size here
+    // double-counted that offset: for any export narrower than the world's
+    // fixed 2:1 aspect (both 9:16 and 16:9 are), the world is always
+    // width-bound (viewW === width, no error there) but viewH < height,
+    // so every framed entity rendered letterboxY pixels too low -- ~60px
+    // and easy to miss at 1920x1080, ~690px (about a third of the frame)
+    // at 1080x1920, which is what made this visible. Matches what
+    // MapCanvas.tsx's onFocusRequest already does for the live canvas.
+    const resolved = resolveAt(scenes, entities, t, scene.viewW, scene.viewH, scene.baseScaleX, scene.baseScaleY, MAX_ZOOM, cameraStart);
     scene.drawHighlights(new Set(resolved.highlightedEntityId ? [resolved.highlightedEntityId] : []), null);
     scene.applyCamera(resolved.camera, showStateBorders);
     app.renderer.render(app.stage);
