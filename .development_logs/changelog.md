@@ -5,6 +5,174 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-23 — Export aspect ratio picker (9:16/16:9) + live canvas now reshapes to match
+
+### Summary
+User-requested, building on the export feature above: a way to choose the
+export's aspect ratio, defaulting to 9:16 (YouTube Shorts) rather than the
+export always being fixed at 1920x1080 landscape. Planned with the user
+before coding (design discussion, then a plan-mode writeup) around a
+reference UI screenshot -- a segmented ratio toggle followed by a small
+output summary readout. Scope was narrowed with the user across a few
+rounds: just two ratios for this pass (9:16 default, 16:9), the picker sits
+persistently above the existing "Show state borders on zoom" checkbox in
+the Instruction Builder (not a popover on the Export button), and the
+summary shows only ratio + resolution (no duration/quality -- confirmed
+those were just illustrative in the reference image).
+
+Initial research (before writing any code) confirmed the camera/rendering
+math (`focusOnBounds`, `tweenCamera`, `applyViewFit`) was already fully
+aspect-ratio-agnostic -- every function takes `screenWidth`/`screenHeight`
+as plain params and does per-axis min-fit -- so wiring the chosen ratio
+through to the export renderer needed no changes there, only replacing two
+hardcoded constants in `exportStore.ts`.
+
+After that piece shipped and was verified working (picker renders, toggles,
+summary updates, `tsc` clean), the user pointed out the actual goal: **the
+live map preview itself should reshape to the chosen ratio**, not just
+silently change what a future Export click would produce. Confirmed with
+the user this meant literally resizing the on-screen canvas area (a tall
+centered strip for 9:16, letterboxed on both sides) rather than an overlay
+crop-guide drawn on top of the unchanged full-bleed canvas.
+
+Building that exposed a real, previously-latent bug: `MapCanvas.tsx` passes
+`resizeTo: container` to Pixi's `Application.init`, and the in-code comment
+above it claimed this "auto-observes container's size (ResizeObserver under
+the hood)" -- read Pixi's own `ResizePlugin` source to check, since the new
+ratio-driven resize wasn't taking effect, and that assumption turned out to
+be wrong: `resizeTo` only re-measures on the **browser window's** `"resize"`
+event, with no observer on the container element itself. It had worked
+correctly for every resize case so far (window resize, resize-reclamp) only
+because every prior resize source *was* a window resize -- this is the
+first case where the container's size changes for a purely-layout reason
+(React re-rendering it to a new size) with the window itself untouched, and
+that gap had simply never been exercised before.
+
+Verified in-browser via chrome-devtools automation (the real Tauri app
+still can't launch in this sandbox -- see the entry above): confirmed via
+`getBoundingClientRect()`/canvas-attribute inspection that the ratio-picker
+change alone left the outer `<div>` resizing correctly while the actual
+`<canvas>` pixel buffer stayed stale, isolating the bug to Pixi's resize
+detection specifically rather than the new layout/store code; after the
+fix, screenshotted both ratios and confirmed the canvas genuinely reshapes
+(tall centered strip for 9:16, wide strip for 16:9), content re-fits with
+no stretching, and toggling back and forth repeatedly stays clean with no
+new console errors beyond the pre-existing documented ones (state-entity
+warnings, the WebGL buffer-size warning from the entry two above).
+
+### Changes
+
+**`src/map/exportStore.ts`**
+- Removed hardcoded `EXPORT_WIDTH = 1920`/`EXPORT_HEIGHT = 1080`. Added
+  `ExportRatio = "9:16" | "16:9"`, an `ExportProfile` shape, and an exported
+  `EXPORT_PROFILES` map (`"9:16"` -> 1080x1920, `"16:9"` -> 1920x1080) so
+  the UI can iterate/look up without a second hardcoded literal anywhere.
+- New `selectedProfile: ExportRatio` (default `"9:16"`) +
+  `setSelectedProfile` on the store -- passive shared state between the
+  picker (`InstructionBuilder.tsx`) and the click site (`startExport`,
+  called from `Timeline.tsx`), the same category `showStateBorders` already
+  occupies in `interactionStore`, chosen specifically so `startExport`'s
+  signature stays unchanged and `Timeline.tsx` needs zero changes.
+- `startExport` now reads `EXPORT_PROFILES[get().selectedProfile]` once,
+  alongside the existing `showStateBorders`/`entities` snapshot, and passes
+  its `width`/`height` into the `runExport` settings object instead of the
+  removed constants. `EXPORT_FPS` untouched -- orthogonal to dimensions.
+
+**`src/map/InstructionBuilder.tsx` / `.css`**
+- New "Export Aspect Ratio" block, first child of `.zone`, above the
+  state-borders checkbox: a two-button segmented toggle (one per
+  `EXPORT_PROFILES` entry) plus a summary line (`"9:16 · 1080x1920"`). New
+  `.ib-ratio-*` CSS classes follow the file's existing dark palette/naming
+  convention, reusing the `#5b8def` accent already used for
+  `.timeline-block-active` for the selected segment.
+
+**`src/map/MapStage.tsx` (new)**
+- Wraps `MapCanvas` and contain-fits its container to the selected export
+  profile's ratio within whatever space is actually available, using the
+  same `min(scaleX, scaleY)` approach `worldRenderer.ts`'s `applyViewFit`
+  already uses internally -- not CSS `aspect-ratio` alone, since a pure-CSS
+  contain-fit-within-an-unknown-box (portrait ratio in a landscape area or
+  vice versa, either axis potentially the limiting one) has no clean
+  solution without JS measurement (verified/reasoned through explicitly
+  before writing this, see Decisions). Measures its wrapper via
+  `ResizeObserver` + an initial `getBoundingClientRect()` (avoids a 0x0
+  flash before the observer's first callback), recomputing on every
+  `selectedProfile` change since the store subscription re-renders it.
+
+**`src/App.tsx` / `App.css`**
+- `.editor-map` now renders `<MapStage />` instead of `<MapCanvas />`
+  directly, gains a `background: #181a1f` (matches the other panels' bg)
+  so the letterboxed area around a non-full-bleed canvas isn't a white
+  flash. New `.map-stage-wrapper` (flex-centers the ratio-constrained box)
+  and `.map-stage` (the sized box itself) rules.
+
+**`src/map/MapCanvas.tsx`**
+- New `ResizeObserver` on `container` (the div Pixi's `resizeTo` already
+  targets), calling `app.resize()` on every observed size change --
+  `AbstractRenderer.resize()` (confirmed by reading Pixi's own source)
+  still emits the same `"resize"` event the existing `onResize` handler
+  already listens for, so this required no changes to that handler, the
+  camera-reclamp logic, or the label-declutter scheduling it triggers.
+  Disconnected in the effect's existing cleanup, alongside the other
+  subscriptions.
+
+### Decisions
+- **Resize the live canvas itself, not an overlay crop guide.** Confirmed
+  explicitly with the user (two concrete options put forward) rather than
+  assumed -- "what you see while authoring is what gets exported" was the
+  actual goal behind asking for a ratio picker at all, not just changing
+  an otherwise-invisible export setting.
+- **`selectedProfile` lives in `exportStore`, not local component state or
+  `interactionStore`.** Reasoned via the same test the codebase already
+  applies to `showStateBorders`: does anything *imperative* (per-frame,
+  outside React) need to read it? No -- only `startExport`, at click-time.
+  But unlike `duration`/`zoomPercent`/other purely-local Instruction
+  Builder fields, it also needs to reach `MapStage.tsx`, a sibling
+  component -- ruling out plain local `useState`. `exportStore` was the
+  correct existing shared substrate for exactly that shape of state,
+  without introducing prop drilling or a new store.
+- **JS-measured contain-fit (`ResizeObserver` + `min(scaleX,scaleY)`), not
+  CSS `aspect-ratio`.** Worked through the CSS-only approaches concretely
+  before writing code and rejected them: `aspect-ratio` only resolves an
+  *auto* dimension from a fixed one, so within a flex/grid cell of unknown,
+  possibly-either-axis-limiting size (portrait content in a landscape cell
+  or vice versa), there's no combination of `width`/`height`/`max-width`/
+  `max-height` that contains correctly on both axes without JS measurement
+  -- `object-fit` doesn't apply either, since it only affects *replaced*
+  content's internal scaling, not the sizing of the box itself, and the
+  box here isn't a replaced element regardless. Reused the exact same
+  `min(scaleX, scaleY)` formula `worldRenderer.ts` already uses for the
+  analogous "fit ratio-constrained content into an available box" problem,
+  rather than inventing a second approach for the same shape of problem.
+- **Fixed Pixi's resize-detection gap at the source (`MapCanvas.tsx`'s own
+  `ResizeObserver`), not by working around it in `MapStage.tsx`.** Once
+  Pixi's `resizeTo` was confirmed (by reading its actual source, not
+  re-trusting the existing comment) to only listen for window resizes, the
+  alternative considered was having `MapStage.tsx` imperatively poke
+  `MapCanvas` somehow after a resize -- rejected as a leaky, one-off
+  workaround for what is really a general gap in `MapCanvas.tsx`'s own
+  resize handling that would bite the *next* thing to resize the container
+  for a non-window reason too, not just this feature.
+
+### Deferred / not yet implemented
+- Only 9:16 and 16:9 -- the reference screenshot showed a fuller set
+  (Auto, 3:4, 1:1, 4:3, 21:9); explicitly descoped to two for this pass,
+  same segmented-toggle/`EXPORT_PROFILES` shape extends cleanly if more are
+  added later.
+- Resolution is fixed per ratio (1080x1920 / 1920x1080), not independently
+  user-selectable -- explicitly descoped, per the user's own read of their
+  reference screenshot ("the quality and time in seconds was just to
+  explain how UI should be").
+- Real end-to-end export-and-play verification at each ratio (an actual
+  exported file, `ffprobe`'d and played back) not yet done this session --
+  same sandbox limitation as the export feature above (no real Tauri
+  launch here). The picker/live-preview UI was verified thoroughly; the
+  actual export codepath for a non-default ratio was reasoned through
+  (fully generic width/height plumbing, confirmed unchanged) but not run
+  end-to-end against the real ffmpeg sidecar.
+
+---
+
 ## 2026-08-23 — Deterministic video export (Phases A-D) + two color bugs fixed
 
 ### Summary

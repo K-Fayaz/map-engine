@@ -59,6 +59,7 @@ export function MapCanvas() {
     let unsubscribeInteraction: (() => void) | null = null;
     let unsubscribeFocus: (() => void) | null = null;
     let worldScene: ReturnType<typeof buildWorldScene> | null = null;
+    let resizeObserver: ResizeObserver | null = null;
 
     app
       .init({
@@ -144,6 +145,17 @@ export function MapCanvas() {
           scheduleLabelDeclutter();
         };
         app.renderer.on("resize", onResize);
+
+        // Pixi's own `resizeTo` (ResizePlugin) only re-measures on the
+        // browser window's "resize" event -- it has no observer on
+        // `container` itself, so it never notices a layout-only size change
+        // (e.g. MapStage.tsx reshaping this container to a chosen export
+        // aspect ratio without the window resizing). This ResizeObserver
+        // fills that gap by calling the same `app.resize()` resizeTo would
+        // have, which re-measures `container.clientWidth/Height` and emits
+        // the renderer "resize" event `onResize` above already handles.
+        resizeObserver = new ResizeObserver(() => app.resize());
+        resizeObserver.observe(container);
 
         // Hit-tests a screen-space point against whichever entity layer is
         // currently active for interaction -- states once zoomed in past
@@ -459,6 +471,7 @@ export function MapCanvas() {
       cancelled = true;
       unsubscribeInteraction?.();
       unsubscribeFocus?.();
+      resizeObserver?.disconnect();
       worldScene?.destroy();
       if (app.renderer) {
         // releaseGlobalResources clears Pixi's pooled batcher buffers on

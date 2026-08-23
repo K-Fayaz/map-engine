@@ -1,3 +1,47 @@
+.ib-ratio-field {
+  margin-bottom: 10px;
+}
+
+.ib-ratio-toggle {
+  display: flex;
+  border: 1px solid #383b42;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.ib-ratio-option {
+  flex: 1;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border: none;
+  background: #25272e;
+  color: #9a9ea6;
+  font-family: sans-serif;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ib-ratio-option + .ib-ratio-option {
+  border-left: 1px solid #383b42;
+}
+
+.ib-ratio-option:hover:not(.ib-ratio-option-active) {
+  background: #2f323b;
+  color: #e6e6e6;
+}
+
+.ib-ratio-option-active {
+  background: #5b8def;
+  color: #f2f4ff;
+}
+
+.ib-ratio-summary {
+  margin-top: 6px;
+  font-family: sans-serif;
+  font-size: 11px;
+  color: #8a8f98;
+}
+
 .ib-checkbox-row {
   display: flex;
   align-items: center;

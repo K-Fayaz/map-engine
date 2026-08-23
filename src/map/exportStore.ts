@@ -15,8 +15,21 @@ import { interactionStore } from "./interactionStore";
 // an export running (the design doc's core requirement).
 export type ExportStatus = "idle" | "exporting" | "done" | "error";
 
-const EXPORT_WIDTH = 1920;
-const EXPORT_HEIGHT = 1080;
+export type ExportRatio = "9:16" | "16:9";
+
+export interface ExportProfile {
+  ratio: ExportRatio;
+  label: string;
+  width: number;
+  height: number;
+}
+
+// 9:16 first/default per the YouTube Shorts use case this was built for.
+export const EXPORT_PROFILES: Record<ExportRatio, ExportProfile> = {
+  "9:16": { ratio: "9:16", label: "9:16", width: 1080, height: 1920 },
+  "16:9": { ratio: "16:9", label: "16:9", width: 1920, height: 1080 },
+};
+
 const EXPORT_FPS = 30;
 
 interface ExportStore {
@@ -24,6 +37,8 @@ interface ExportStore {
   currentFrame: number;
   totalFrames: number;
   errorMessage: string | null;
+  selectedProfile: ExportRatio;
+  setSelectedProfile: (ratio: ExportRatio) => void;
   startExport: (scenes: Scene[], startFromWorldView: boolean) => Promise<void>;
   cancelExport: () => void;
 }
@@ -35,6 +50,8 @@ export const useExportStore = create<ExportStore>((set, get) => ({
   currentFrame: 0,
   totalFrames: 0,
   errorMessage: null,
+  selectedProfile: "9:16",
+  setSelectedProfile: (ratio) => set({ selectedProfile: ratio }),
 
   startExport: async (scenes, startFromWorldView) => {
     if (get().status === "exporting" || scenes.length === 0) return;
@@ -59,6 +76,10 @@ export const useExportStore = create<ExportStore>((set, get) => ({
       // export must depend only on the story definition, not on anything
       // that could change while it runs.
       const entities: Entity[] = interactionStore.getState().entities;
+      // Same one-time-snapshot reasoning as showStateBorders/entities above --
+      // the profile selected at click-time, not whatever it is if the user
+      // changes it mid-export.
+      const profile = EXPORT_PROFILES[get().selectedProfile];
 
       set({ status: "exporting", currentFrame: 0, totalFrames: 0, errorMessage: null });
 
@@ -66,8 +87,8 @@ export const useExportStore = create<ExportStore>((set, get) => ({
         scenes,
         entities,
         {
-          width: EXPORT_WIDTH,
-          height: EXPORT_HEIGHT,
+          width: profile.width,
+          height: profile.height,
           fps: EXPORT_FPS,
           outputPath,
           cameraStart: startFromWorldView ? "world" : "instant",

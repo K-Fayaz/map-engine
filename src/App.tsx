@@ -1,12 +1,13 @@
 import "./App.css";
-import { MapCanvas } from "./map/MapCanvas";
+import { MapStage } from "./map/MapStage";
 import { InstructionBuilder } from "./map/InstructionBuilder";
 import { Timeline } from "./map/Timeline";
 
 // Phase 6 editor shell (roadmap.md section 1): Map on top, Timeline and
-// Instruction Builder split across the bottom. MapCanvas already resizes to
-// whatever container it's given (`resizeTo: container` in MapCanvas.tsx),
-// so shrinking its area here needs no changes there.
+// Instruction Builder split across the bottom. MapStage (map/MapStage.tsx)
+// contain-fits MapCanvas to the selected export aspect ratio within this
+// area; MapCanvas itself already resizes to whatever container it's given
+// (`resizeTo: container` in MapCanvas.tsx), so it needs no changes here.
 //
 // SearchBox.tsx (the floating in-map search overlay) was removed here --
 // the Instruction Builder's entity picker is now the only path used to
@@ -17,7 +18,7 @@ function App() {
   return (
     <div className="editor-layout">
       <div className="editor-map">
-        <MapCanvas />
+        <MapStage />
       </div>
       <div className="editor-timeline">
         <Timeline />

@@ -11,6 +11,7 @@ import {
   type AnimationValue,
 } from "./scenes";
 import { useSceneStore } from "./sceneStore";
+import { EXPORT_PROFILES, useExportStore } from "./exportStore";
 
 // Right-panel Instruction Builder (roadmap.md Phase 6, section 3). This
 // entity picker deliberately does NOT require clicking the map -- per
@@ -23,6 +24,8 @@ import { useSceneStore } from "./sceneStore";
 // building a story never requires touching it.
 export function InstructionBuilder() {
   const { entities, showStateBorders } = useInteractionStore();
+  const selectedProfile = useExportStore((state) => state.selectedProfile);
+  const setSelectedProfile = useExportStore((state) => state.setSelectedProfile);
   const scenes = useSceneStore((state) => state.scenes);
   const addScene = useSceneStore((state) => state.addScene);
   const editingSceneId = useSceneStore((state) => state.editingSceneId);
@@ -135,6 +138,28 @@ export function InstructionBuilder() {
 
   return (
     <div className="zone">
+      <div className="ib-ratio-field">
+        <span className="ib-field-label">Export Aspect Ratio</span>
+        <div className="ib-ratio-toggle">
+          {Object.values(EXPORT_PROFILES).map((profile) => (
+            <button
+              key={profile.ratio}
+              type="button"
+              className={
+                "ib-ratio-option" +
+                (selectedProfile === profile.ratio ? " ib-ratio-option-active" : "")
+              }
+              onClick={() => setSelectedProfile(profile.ratio)}
+            >
+              {profile.label}
+            </button>
+          ))}
+        </div>
+        <div className="ib-ratio-summary">
+          {EXPORT_PROFILES[selectedProfile].label} ·{" "}
+          {EXPORT_PROFILES[selectedProfile].width}x{EXPORT_PROFILES[selectedProfile].height}
+        </div>
+      </div>
       {/* Manual override for state-border visibility on zoom -- when off,
           states also stop being clickable/hoverable (interactionStore.ts's
           showStateBorders, read by MapCanvas.tsx's hitTestScreenPoint). */}
