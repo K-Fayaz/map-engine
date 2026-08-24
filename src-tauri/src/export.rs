@@ -46,6 +46,10 @@ pub fn start_export(
     height: u32,
     fps: u32,
     output_path: String,
+    // Local filesystem path to the reference audio clip (audioStore.ts), or
+    // None when no clip is loaded. ffmpeg opens this file itself, as its
+    // own OS process -- these bytes never pass through the frontend/IPC.
+    audio_path: Option<String>,
 ) -> Result<(), String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
     if guard.is_some() {
@@ -55,50 +59,80 @@ pub fn start_export(
     let size_arg = format!("{width}x{height}");
     let fps_arg = fps.to_string();
 
+    // Video (stdin, rawvideo) is always input 0. When an audio clip is
+    // present it's appended as input 1, with explicit -map/-c:a so the
+    // muxer knows what to do with two inputs; with no clip this is exactly
+    // the single-input command that always existed here, unchanged.
+    //
+    // Deliberately no -shortest: video's frame count is already fixed by
+    // the piped rawvideo input regardless of audio length, so a shorter
+    // clip simply finishes and the rest of the video continues in silence
+    // on its own -- and a longer clip is explicitly left unhandled for now
+    // (not a case this pass needs to cover).
+    let mut args: Vec<String> = vec![
+        "-y".into(),
+        "-f".into(),
+        "rawvideo".into(),
+        "-pix_fmt".into(),
+        "rgba".into(),
+        "-s".into(),
+        size_arg,
+        "-r".into(),
+        fps_arg.clone(),
+        "-i".into(),
+        "-".into(),
+    ];
+    if let Some(audio_path) = &audio_path {
+        args.push("-i".into());
+        args.push(audio_path.clone());
+    }
+    args.extend([
+        // Untagged HD (>=720 lines) output leaves players to guess the
+        // RGB<->YUV matrix used, and most (VLC included) guess BT.709
+        // for anything HD-sized -- but ffmpeg's default conversion
+        // during the pix_fmt change actually uses BT.601 coefficients.
+        // That mismatch is exactly what washed out/shifted our colors
+        // in VLC despite the frames being correct going in (confirmed
+        // via a controlled round-trip test: tagging alone, without
+        // also forcing the real conversion matrix, made it worse --
+        // both have to agree). `scale=out_color_matrix=bt709` forces
+        // the actual conversion; the three tags below make sure any
+        // spec-compliant player decodes with the same matrix instead
+        // of guessing.
+        "-vf".into(),
+        "scale=out_color_matrix=bt709".into(),
+        "-colorspace".into(),
+        "bt709".into(),
+        "-color_primaries".into(),
+        "bt709".into(),
+        "-color_trc".into(),
+        "bt709".into(),
+        "-c:v".into(),
+        "libx264".into(),
+        "-pix_fmt".into(),
+        "yuv420p".into(),
+    ]);
+    if audio_path.is_some() {
+        args.extend([
+            "-map".into(),
+            "0:v:0".into(),
+            "-map".into(),
+            "1:a:0".into(),
+            "-c:a".into(),
+            "aac".into(),
+            "-b:a".into(),
+            "192k".into(),
+        ]);
+    }
+    args.push("-movflags".into());
+    args.push("+faststart".into());
+    args.push(output_path.clone());
+
     let (rx, child) = app
         .shell()
         .sidecar("ffmpeg")
         .map_err(|e| e.to_string())?
-        .args([
-            "-y",
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            "rgba",
-            "-s",
-            &size_arg,
-            "-r",
-            &fps_arg,
-            "-i",
-            "-",
-            // Untagged HD (>=720 lines) output leaves players to guess the
-            // RGB<->YUV matrix used, and most (VLC included) guess BT.709
-            // for anything HD-sized -- but ffmpeg's default conversion
-            // during the pix_fmt change actually uses BT.601 coefficients.
-            // That mismatch is exactly what washed out/shifted our colors
-            // in VLC despite the frames being correct going in (confirmed
-            // via a controlled round-trip test: tagging alone, without
-            // also forcing the real conversion matrix, made it worse --
-            // both have to agree). `scale=out_color_matrix=bt709` forces
-            // the actual conversion; the three tags below make sure any
-            // spec-compliant player decodes with the same matrix instead
-            // of guessing.
-            "-vf",
-            "scale=out_color_matrix=bt709",
-            "-colorspace",
-            "bt709",
-            "-color_primaries",
-            "bt709",
-            "-color_trc",
-            "bt709",
-            "-c:v",
-            "libx264",
-            "-pix_fmt",
-            "yuv420p",
-            "-movflags",
-            "+faststart",
-            &output_path,
-        ])
+        .args(args)
         .spawn()
         .map_err(|e| e.to_string())?;
 

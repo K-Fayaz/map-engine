@@ -5,6 +5,182 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-24 — Reference audio track in Timeline (+ two timeline layout bugs)
+
+### Summary
+User asked whether audio in the timeline would help; discussed it and landed
+somewhere more useful than "mux music into the export" -- a single
+reference audio clip (voiceover/music) loaded into the Timeline as a
+**visual + audible reference** for timing scene durations against, since
+there was previously no way to see or hear where a beat/line falls while
+authoring. Scoped down across a few rounds with the user: one clip only (no
+multi-clip/SFX tracks -- explicitly future work), no live-playback sync
+(Play/preview stays exactly as it is today; the clip's own play/pause/seek
+is independent -- `sceneStore.ts`'s `playFrom` has no shared clock to hook
+one into, and building one was ruled out of scope), waveform decoded
+client-side via the Web Audio API (no new charting dependency), and --
+after first scoping export-muxing as optional -- folded into this same pass
+once discussed, since ffmpeg already supports a second input almost for
+free. Planned via `EnterPlanMode` before implementation, as usual for
+work this size.
+
+### Changes
+
+**New Tauri capability -- reading a local file's bytes**
+- Added `tauri-plugin-fs` (`Cargo.toml`, registered in `lib.rs`,
+  `"fs:default"` in `capabilities/default.json`, `@tauri-apps/plugin-fs` in
+  `package.json`) -- the app's first filesystem-read capability. ffmpeg
+  itself never touches these bytes; it opens the picked file directly by
+  path, the same way `output_path` already worked -- bytes in JS are only
+  needed for the `<audio>` preview element and the waveform decode.
+  Dialog-picked paths get automatic fs-read scope from Tauri v2's
+  dialog+fs integration, so no static filesystem scope was needed.
+
+**New `src/map/audioStore.ts`**
+- Picks one file via `@tauri-apps/plugin-dialog`'s `open()` (the first
+  `open()` call in the codebase -- only `save()` existed before, for
+  export's output path), reads it via `readFile()`, decodes it with
+  `AudioContext.decodeAudioData()` for duration, downsamples the channel
+  data into a fixed 800-peak array (same "fixed target count, not one
+  sample per pixel" idea `timelineLayout.ts`'s `pickTickInterval` already
+  uses for ruler ticks), and builds an object URL for playback. Its own
+  store, mirroring `exportStore.ts`'s separation rationale -- a distinct,
+  self-contained async load/decode concern, not scene data.
+
+**New `src/map/AudioWaveform.tsx`**
+- Small canvas component: draws the peaks array as bars plus a playhead
+  line, redrawing on peaks/playhead change.
+
+**`Timeline.tsx` / `Timeline.css`**
+- New audio-track row: add/remove the clip, click-to-seek anywhere on the
+  waveform bar, playhead driven by the `<audio>` element's `timeupdate` --
+  entirely independent of Play/live camera playback.
+
+**Export muxing**
+- `exportStore.ts`/`exportPipeline.ts`: the clip's file path is snapshotted
+  at Export-click time (same one-time-snapshot pattern already used for
+  `showStateBorders`/`entities`/`profile`) and threaded through as
+  `ExportSettings.audioPath`.
+- `export.rs`: `start_export` gains an optional `audio_path`; when present,
+  adds it as ffmpeg input 1 with explicit `-map 0:v:0 -map 1:a:0 -c:a aac
+  -b:a 192k`; when absent, the command is byte-for-byte what it was before.
+  Deliberately no `-shortest` -- per the user's explicit call, a shorter
+  clip just plays out and the video continues silently after (ffmpeg's own
+  default behavior, no flag needed); a longer clip is left unhandled for
+  this pass.
+
+**Two follow-up UI fixes, requested after first landing**
+- Moved the audio play/pause toggle out of the waveform row -- removing
+  the filename text and inline circular play button that were pushing the
+  waveform bar visually out of alignment with the ruler/scene track above
+  it -- into the Export row instead, reusing `.timeline-export-btn`'s exact
+  class so it sits inline at the same size right after Export, not the
+  accidental full-width bar it first rendered as (a flex-column stretch
+  default it hadn't been opted out of).
+- Two layout bugs surfaced once the timeline had enough scenes to actually
+  scroll:
+  1. **Scene blocks compressing instead of the track scrolling.**
+     `.timeline-block` had no `flex-shrink: 0`, so once total scene
+     duration exceeded the panel's own width, every block got
+     proportionally squeezed below its real `duration * PIXELS_PER_SECOND`
+     width instead of the track legitimately overflowing (which
+     `.editor-timeline`'s existing `overflow: auto` was already there
+     for). Root cause: `.timeline-track`/`.timeline-audio-row` are flex
+     items of `.timeline-panel` (a column flex container), whose default
+     cross-axis stretch pinned their own width to the panel's visible
+     width. Fixed with `align-self: flex-start` on both rows plus
+     `flex-shrink: 0` on `.timeline-block`.
+  2. **Controls scrolling away with the timeline.** Once the timeline did
+     scroll horizontally, the whole panel -- Play/Export/Audio buttons
+     included -- scrolled together with the ruler/track, since they were
+     all one horizontally-overflowing flex row. Fixed by wrapping the
+     ruler + track + audio row in a new `.timeline-scroll-area` div with
+     its own `overflow-x: auto`, so the controls above stay fixed in view
+     during a horizontal scroll.
+
+### Decisions
+- **One audio track, reference-only, no live-playback sync** -- explicit
+  user scoping across a few rounds of discussion; multi-clip/SFX tracks
+  and camera-sync playback both deferred, not rejected.
+- **Web Audio API decode over a waveform library** -- no new dependency,
+  the browser API already covers exactly what's needed.
+- **Export muxing folded into this same pass, not deferred** -- once
+  discussed, ffmpeg already supporting a second input made it a small
+  addition rather than a separate effort.
+- **No `-shortest` ffmpeg flag** -- matches the user's explicit call:
+  audio shorter than the video just plays out (ffmpeg's own default,
+  nothing to build); audio longer than the video is intentionally left
+  unhandled this pass.
+
+### Deferred / not yet implemented
+- Multiple/positionable audio clips, SFX/other tracks.
+- Live-playback (Play button) audio sync with scripted camera pans --
+  would need a shared clock the playback engine doesn't have today.
+- Audio-longer-than-video export behavior -- left as ffmpeg's unmodified
+  default, not specially handled.
+- Real end-to-end verification (pick a file, hear it play/seek, run an
+  export with audio attached, `ffprobe` the result) deferred to the user's
+  own machine -- same sandbox limitation as prior export work.
+
+---
+
+## 2026-08-24 — Bug fix: exported frames mis-centered in non-16:9 aspect ratios
+
+### Summary
+User noticed, once exporting real 9:16 videos, that the zoomed/highlighted
+entity consistently rendered near the bottom of the frame (Chile:
+bottom-right) instead of centered -- reproduced across four separate
+examples (Australia, Singapore, Venezuela, Chile). Investigated read-only
+first, no code changes, before touching anything, per the user's own
+request.
+
+Root cause found in `exportPipeline.ts`'s `renderFrame`: it called
+`resolveAt(..., width, height, ...)` with the raw export canvas
+dimensions, not `scene.viewW`/`scene.viewH` (the letterboxed,
+contain-fitted world frame that `focusOnBounds`/`clampCamera`/`tweenCamera`
+are meant to operate in) -- exactly what `MapCanvas.tsx`'s live
+`onFocusRequest` already does correctly. `scene.applyCamera()` then
+separately added `letterboxX`/`letterboxY` on top, double-counting the
+offset. Worked through the algebra and confirmed the error comes out to
+exactly `+letterboxY`: harmless at 1920x1080 (~60px, easy to never notice)
+but ~690px -- about a third of the frame -- at 1080x1920. A pre-existing
+bug from the original export work, only made visible once 9:16 export
+existed.
+
+Separately investigated, but left unfixed per the user's explicit call
+("rare case"): Chile's and Australia's country polygons in the underlying
+dataset include far-flung external territories (Easter Island for Chile,
+~109°W; Macquarie Island for Australia, ~55°S) -- confirmed by computing
+their actual bounding boxes directly from the topojson data via a Node
+script. That drags `computeFramingBounds`'s center out toward those
+islands, pushing the mainland toward the frame's edge even with perfectly
+correct centering math. A different root cause (bad framing input, not a
+math bug) -- left as a cosmetic edge case affecting only countries with
+such territories baked into the same polygon.
+
+### Changes
+
+**`src/map/exportPipeline.ts`**
+- `renderFrame` now passes `scene.viewW`/`scene.viewH` into `resolveAt`
+  instead of the raw canvas `width`/`height`.
+
+### Decisions
+- **Diagnosed via direct measurement before touching code** -- browser
+  pixel inspection, reading Pixi's own `ResizePlugin` source, and a Node
+  script computing real country bounding boxes from the topojson data --
+  after an earlier hypothesis (a camera-clamp mismatch) didn't hold up
+  under scrutiny.
+- **Left the outlier-territory bounding-box issue unfixed**, confirmed
+  explicitly with the user as a rare/cosmetic case rather than assumed.
+
+### Deferred / not yet implemented
+- Country framing bounds pulled off-center by included external
+  territories (Chile/Australia, and presumably others with similar
+  overseas territories baked into the same polygon) -- would need
+  excluding known outliers or a mainland-only bounding box; not pursued.
+
+---
+
 ## 2026-08-23 — Export aspect ratio picker (9:16/16:9) + live canvas now reshapes to match
 
 ### Summary

@@ -4,6 +4,7 @@ import type { Scene } from "./scenes";
 import type { Entity } from "./entities";
 import { runExport, type ExportHandle } from "./exportPipeline";
 import { interactionStore } from "./interactionStore";
+import { useAudioStore } from "./audioStore";
 
 // Export's own store, separate from sceneStore/interactionStore -- same
 // reasoning sceneStore.ts already gives for being separate from
@@ -80,6 +81,10 @@ export const useExportStore = create<ExportStore>((set, get) => ({
       // the profile selected at click-time, not whatever it is if the user
       // changes it mid-export.
       const profile = EXPORT_PROFILES[get().selectedProfile];
+      // Same one-time-snapshot reasoning -- the audio clip loaded when
+      // Export was clicked, not whatever it is if the user swaps/clears it
+      // mid-export.
+      const audioPath = useAudioStore.getState().filePath;
 
       set({ status: "exporting", currentFrame: 0, totalFrames: 0, errorMessage: null });
 
@@ -93,6 +98,7 @@ export const useExportStore = create<ExportStore>((set, get) => ({
           outputPath,
           cameraStart: startFromWorldView ? "world" : "instant",
           showStateBorders,
+          audioPath,
         },
         (currentFrame, totalFrames) => set({ currentFrame, totalFrames }),
       );

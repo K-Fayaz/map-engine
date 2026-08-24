@@ -1,11 +1,15 @@
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import "./Timeline.css";
 import { useInteractionStore } from "./interactionStore";
 import { useSceneStore } from "./sceneStore";
 import { useExportStore } from "./exportStore";
+import { useAudioStore } from "./audioStore";
 import { describeAnimation, sceneAnimationValue, sceneZoomPercent, type Scene } from "./scenes";
 import { TimelineRuler } from "./TimelineRuler";
+import { AudioWaveform } from "./AudioWaveform";
 import { PIXELS_PER_SECOND } from "./timelineLayout";
+
+const AUDIO_TRACK_HEIGHT = 48;
 
 // Bottom-left Timeline panel (roadmap.md Phase 6, section 8). Scene blocks
 // are laid out edge-to-edge, each block's width = duration *
@@ -23,6 +27,46 @@ export function Timeline() {
   const startFromWorldView = useSceneStore((state) => state.startFromWorldView);
   const setStartFromWorldView = useSceneStore((state) => state.setStartFromWorldView);
   const { entities } = useInteractionStore();
+
+  const audioFileName = useAudioStore((state) => state.fileName);
+  const audioObjectUrl = useAudioStore((state) => state.objectUrl);
+  const audioDurationSeconds = useAudioStore((state) => state.durationSeconds);
+  const audioPeaks = useAudioStore((state) => state.peaks);
+  const audioIsLoading = useAudioStore((state) => state.isLoading);
+  const audioError = useAudioStore((state) => state.error);
+  const pickAudioFile = useAudioStore((state) => state.pickAudioFile);
+  const clearAudio = useAudioStore((state) => state.clearAudio);
+
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const [isAudioPlaying, setIsAudioPlaying] = useState(false);
+  const [playheadSeconds, setPlayheadSeconds] = useState(0);
+
+  // Resets playback UI state whenever a different (or no) clip is loaded --
+  // a stale isAudioPlaying/playhead from the previous clip would otherwise
+  // survive a pick/clear since the <audio> element's own src just changes
+  // underneath it.
+  useEffect(() => {
+    setIsAudioPlaying(false);
+    setPlayheadSeconds(0);
+  }, [audioObjectUrl]);
+
+  const toggleAudioPlayback = () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (audio.paused) audio.play();
+    else audio.pause();
+  };
+
+  // Click-to-seek anywhere on the waveform bar -- the actual point of this
+  // track (see audioStore.ts's header comment): line a scene's duration up
+  // against a specific point in the audio by ear, not just by eye.
+  const seekAudioTo = (clientX: number, barLeft: number) => {
+    const audio = audioRef.current;
+    if (!audio || !audioDurationSeconds) return;
+    const seconds = Math.max(0, Math.min(audioDurationSeconds, (clientX - barLeft) / PIXELS_PER_SECOND));
+    audio.currentTime = seconds;
+    setPlayheadSeconds(seconds);
+  };
 
   const exportStatus = useExportStore((state) => state.status);
   const exportCurrentFrame = useExportStore((state) => state.currentFrame);
@@ -106,6 +150,18 @@ export function Timeline() {
         >
           Export
         </button>
+        {/* Independent of the video Play/Pause above -- this only controls
+            the reference <audio> element (see audioStore.ts's header
+            comment), not synced to scripted camera playback. */}
+        {audioObjectUrl && (
+          <button
+            type="button"
+            className="timeline-export-btn"
+            onClick={toggleAudioPlayback}
+          >
+            {isAudioPlaying ? "⏸ Audio" : "▶ Audio"}
+          </button>
+        )}
         {isExporting && (
           <>
             <span className="timeline-export-progress">
@@ -125,6 +181,11 @@ export function Timeline() {
           </span>
         )}
       </div>
+      {/* Play/world-view/Export/Audio controls above stay outside this
+          wrapper so they never scroll out of view -- only the ruler/track/
+          audio row (which can legitimately be wider than the panel) scroll
+          horizontally, clipped to the panel's own width. */}
+      <div className="timeline-scroll-area">
       <TimelineRuler totalDurationSeconds={totalDurationSeconds} />
       {scenes.length === 0 ? (
         <div className="timeline-empty">No scenes yet -- build one in the Instruction Builder.</div>
@@ -167,6 +228,60 @@ export function Timeline() {
             ))}
           </ol>
       )}
+      {/* Reference audio track (see audioStore.ts's header comment) -- one
+          clip for the whole story, purely a visual/audible reference for
+          timing scene durations against. Not synced to Play/live playback;
+          this <audio> element's play/pause/seek is entirely independent. */}
+      <div className="timeline-audio-row">
+        {!audioObjectUrl ? (
+          <button
+            type="button"
+            className="timeline-audio-add-btn"
+            onClick={() => pickAudioFile()}
+            disabled={audioIsLoading}
+          >
+            {audioIsLoading ? "Loading…" : "+ Add Audio"}
+          </button>
+        ) : (
+          <div className="timeline-audio-clip">
+            <div
+              className="timeline-audio-waveform-bar"
+              style={{ width: (audioDurationSeconds ?? 0) * PIXELS_PER_SECOND }}
+              onClick={(e) => seekAudioTo(e.clientX, e.currentTarget.getBoundingClientRect().left)}
+              title={audioFileName ?? undefined}
+            >
+              {audioPeaks && (
+                <AudioWaveform
+                  peaks={audioPeaks}
+                  width={(audioDurationSeconds ?? 0) * PIXELS_PER_SECOND}
+                  height={AUDIO_TRACK_HEIGHT}
+                  playheadFraction={
+                    audioDurationSeconds ? playheadSeconds / audioDurationSeconds : null
+                  }
+                />
+              )}
+            </div>
+            <button
+              type="button"
+              className="timeline-audio-clear-btn"
+              onClick={() => clearAudio()}
+              aria-label="Remove audio"
+            >
+              ×
+            </button>
+            <audio
+              ref={audioRef}
+              src={audioObjectUrl}
+              onPlay={() => setIsAudioPlaying(true)}
+              onPause={() => setIsAudioPlaying(false)}
+              onTimeUpdate={(e) => setPlayheadSeconds(e.currentTarget.currentTime)}
+              onEnded={() => setIsAudioPlaying(false)}
+            />
+          </div>
+        )}
+        {audioError && <span className="timeline-audio-error">{audioError}</span>}
+      </div>
+      </div>
     </div>
   );
 }

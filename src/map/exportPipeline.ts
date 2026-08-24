@@ -12,6 +12,10 @@ export interface ExportSettings {
   outputPath: string;
   cameraStart: "instant" | "world";
   showStateBorders: boolean;
+  // Local filesystem path to the reference audio clip (see audioStore.ts),
+  // or null when no clip is loaded. ffmpeg reads this file itself, as its
+  // own OS process -- these bytes never pass through this pipeline.
+  audioPath: string | null;
 }
 
 // `Math.ceil` so a story whose duration isn't an exact multiple of the frame
@@ -101,7 +105,7 @@ export async function runExport(
   settings: ExportSettings,
   onProgress?: (frame: number, totalFrames: number) => void,
 ): Promise<ExportHandle> {
-  const { width, height, fps, outputPath, cameraStart, showStateBorders } = settings;
+  const { width, height, fps, outputPath, cameraStart, showStateBorders, audioPath } = settings;
   const totalFrames = computeTotalFrames(scenes, fps);
 
   const { app, scene } = await buildExportRenderer(width, height);
@@ -155,7 +159,7 @@ export async function runExport(
   };
 
   const run = async (): Promise<void> => {
-    await invoke("start_export", { width, height, fps, outputPath });
+    await invoke("start_export", { width, height, fps, outputPath, audioPath });
     try {
       await runExportLoop({
         totalFrames,

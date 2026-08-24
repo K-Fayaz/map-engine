@@ -97,6 +97,14 @@
   color: #e57373;
 }
 
+.timeline-scroll-area {
+  /* .timeline-panel's default cross-axis stretch pins this to the panel's
+     own (fixed) width -- exactly what's wanted here: a fixed-width
+     viewport that scrolls its own, often-wider content, instead of the
+     whole panel (controls included) scrolling together. */
+  overflow-x: auto;
+}
+
 .timeline-empty {
   font-family: sans-serif;
   font-size: 13px;
@@ -109,6 +117,14 @@
   margin: 0;
   padding: 0 12px;
   display: flex;
+  /* .timeline-panel is a column flex container, whose default
+     align-items: stretch would otherwise force this row's own width to
+     the panel's visible width instead of its content's actual (often
+     wider, scrollable-via-.editor-timeline) total -- align-self opts this
+     row out of that stretch so it can grow past the visible area instead
+     of squeezing its children (see .timeline-block's flex-shrink below)
+     to fit. */
+  align-self: flex-start;
   /* Edge-to-edge, not gapped -- each block's width is duration *
      PIXELS_PER_SECOND (timelineLayout.ts), so blocks touching is what
      keeps the track's cumulative width lined up with the ruler above it. */
@@ -126,6 +142,14 @@
   font-family: sans-serif;
   box-sizing: border-box;
   cursor: pointer;
+  /* Flex items default to flex-shrink: 1 -- without this, once the
+     blocks' combined width exceeded the track's own (stretched) width,
+     every block got proportionally compressed below its actual
+     duration * PIXELS_PER_SECOND instead of the track legitimately
+     overflowing/scrolling (which .editor-timeline's overflow: auto is
+     already there for). Pinning width in place is the whole point of a
+     duration-driven block, so it must never shrink. */
+  flex-shrink: 0;
 }
 
 .timeline-delete-btn {
@@ -194,4 +218,111 @@
 .timeline-block-active {
   border-color: #5b8def;
   box-shadow: 0 0 0 1px #5b8def;
+}
+
+.timeline-audio-row {
+  margin: 8px 12px 12px;
+  /* Same fix as .timeline-track's align-self -- without it, .timeline-panel's
+     default cross-axis stretch pins this row to the panel's visible width,
+     and .timeline-audio-waveform-bar's flex-shrink: 0 would then just
+     overflow this row's own box instead of the row (and its scrollable
+     ancestor, .editor-timeline) actually growing to fit it. */
+  align-self: flex-start;
+}
+
+.timeline-audio-add-btn {
+  padding: 6px 16px;
+  font-family: sans-serif;
+  font-size: 13px;
+  color: #9a9ea6;
+  background: #21232a;
+  border: 1px dashed #383b42;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.timeline-audio-add-btn:hover:not(:disabled) {
+  color: #e6e6e6;
+  background: #2c2f38;
+}
+
+.timeline-audio-add-btn:disabled {
+  color: #6a6e76;
+  cursor: default;
+}
+
+.timeline-audio-clip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.timeline-audio-playback-btn {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  line-height: 1;
+  font-size: 12px;
+  color: #e6e6e6;
+  background: #2c2f38;
+  border: 1px solid #383b42;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.timeline-audio-playback-btn:hover {
+  background: #383b42;
+}
+
+.timeline-audio-filename {
+  flex-shrink: 0;
+  max-width: 140px;
+  font-family: sans-serif;
+  font-size: 12px;
+  color: #9a9ea6;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.timeline-audio-waveform-bar {
+  flex-shrink: 0;
+  height: 48px;
+  background: #21232a;
+  border: 1px solid #383b42;
+  border-radius: 4px;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.audio-waveform-canvas {
+  display: block;
+}
+
+.timeline-audio-clear-btn {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  line-height: 1;
+  font-size: 16px;
+  color: #9a9ea6;
+  background: #2c2f38;
+  border: 1px solid #383b42;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.timeline-audio-clear-btn:hover {
+  color: #e6e6e6;
+  background: #383b42;
+}
+
+.timeline-audio-error {
+  display: block;
+  margin-top: 6px;
+  font-family: sans-serif;
+  font-size: 12px;
+  color: #e57373;
 }
