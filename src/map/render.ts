@@ -78,6 +78,28 @@ function projectPoints(points: Position[]): number[] {
   return points.flatMap(([lon, lat]) => project(lon, lat));
 }
 
+// Some Natural Earth polygons (Antarctica, specifically) include an extra
+// ring that's not real coastline at all: a full sweep across every
+// longitude at a constant latitude essentially equal to the pole (observed:
+// 257 points, every one within a hundredth of a degree of lat -90) --
+// a technical closure Natural Earth inserts to seal a polygon shut exactly
+// along the map's flat polar edge. In an equirectangular projection this
+// degenerates into a near-zero-height shape spanning the full map width
+// right at that edge; if it's drawn as a normal ring (see fillGeometry/
+// strokeGeometry below), it renders as a thin filled/stroked sliver at the
+// bottom of the map, distinct from -- and rendered in addition to -- the
+// real Antarctic coastline (which comes from other, normally-shaped
+// polygons in the same MultiPolygon and renders correctly on its own).
+// Detected generically (not by feature name), since no legitimate ring
+// anywhere else in the vendored data comes anywhere close to true polar
+// latitude -- ordinary antimeridian crossings (Fiji, Russia) sit at
+// everyday latitudes, nowhere near this threshold.
+const POLE_LAT_EPSILON = 0.01;
+
+function isPolarClosureRing(ring: Position[]): boolean {
+  return ring.every(([, lat]) => 90 - Math.abs(lat) < POLE_LAT_EPSILON);
+}
+
 // `alpha` defaults to 1 (fully opaque, existing behavior for land/country
 // fills) -- overridable for translucent highlight overlays (see
 // MapCanvas.tsx's hover/selection highlight).
@@ -88,7 +110,18 @@ export function fillGeometry(
   alpha: number = 1,
 ) {
   for (const rings of toPolygons(geometry)) {
-    rings.forEach((ring, ringIndex) => {
+    // Drops polar-closure rings before assigning fill/cut roles below, not
+    // just skipping them in place -- for Antarctica's own coastline
+    // (the real, detailed ring), the polar-closure ring happens to be
+    // *first*, so leaving it in and only skipping its own draw call would
+    // leave the real coastline ring at ringIndex 1, permanently treated as
+    // a hole to `cut()` rather than the exterior to `fill()` -- silently
+    // discarding the actual detailed coastline along with the synthetic
+    // edge. Filtering first means whatever ring is real ends up at index 0
+    // and gets filled, same as any ordinary single-ring country.
+    const realRings = rings.filter((ring) => !isPolarClosureRing(ring));
+    if (realRings.length === 0) continue;
+    realRings.forEach((ring, ringIndex) => {
       for (const piece of splitAtAntimeridian(ring)) {
         const points = projectPoints(piece);
         graphics.poly(points, true);
@@ -128,6 +161,10 @@ export function fillGeometry(
 export function strokeGeometry(graphics: Graphics, geometry: AreaGeometry, color: number = BORDER_COLOR) {
   for (const rings of toPolygons(geometry)) {
     for (const ring of rings) {
+      // Same reasoning as fillGeometry above -- skip only the synthetic
+      // ring itself, not the rest of this polygon's real rings (which
+      // includes Antarctica's actual detailed coastline).
+      if (isPolarClosureRing(ring)) continue;
       for (const piece of splitAtAntimeridian(ring)) {
         const points = projectPoints(piece);
         graphics.poly(points, true).stroke({ width: 1, color, pixelLine: true });

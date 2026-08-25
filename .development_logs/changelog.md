@@ -5,6 +5,77 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-25 — Bug fix: stray filled line below Antarctica
+
+### Summary
+User spotted a thin filled line running horizontally right below Antarctica
+in the map and asked why -- investigated read-only first. Traced it to
+`splitAtAntimeridian` (`src/map/render.ts`, added in an earlier session to
+stop a handful of Natural Earth polygons -- Russia's Chukotka peninsula,
+Fiji, Antarctica's own polar closure -- from rendering as a stray line
+across the whole map when their ring data jumps from ~+180 to ~-180
+longitude). Confirmed concretely by pulling Antarctica's actual ring data
+out of `world-atlas/countries-50m.json`: one of its polygon elements has
+*two* rings -- a real 2539-point coastline (lat -63 to -85) and a separate
+257-point "ring" that isn't coastline at all, just a full sweep across every
+longitude at a constant latitude of -89.999 (i.e. Natural Earth's own
+technical closure sealing the polygon shut along the map's flat southern
+edge). That degenerate ring was being drawn and filled like any other ring,
+producing the visible sliver.
+
+First fix attempt skipped the *entire* polygon element whenever its first
+ring was this synthetic closure -- removed the line, but on reflection (and
+before telling the user it was done) realized this also silently discarded
+the real 2539-point coastline ring bundled into the same element, alongside
+the bogus one. Corrected to filter out only the synthetic ring itself
+before assigning fill/cut roles to whatever's left, so the real coastline
+in that element still renders. Verified in-browser (chrome-devtools): the
+line is gone at world view, and zooming into Antarctica directly shows a
+properly jagged, detailed coastline with no artifact -- confirmed the
+remaining "blockier than Google Maps" look at world-zoom is just this app's
+existing zoom-based LOD system (coarser data at low zoom, same as every
+other country), not a bug, by comparing the coarse world-view shape against
+the same region zoomed in.
+
+### Changes
+
+**`src/map/render.ts`**
+- New `isPolarClosureRing(ring)` + `POLE_LAT_EPSILON = 0.01` -- detects a
+  ring whose every point sits within 0.01° of true polar latitude (±90°).
+  Generic, not Antarctica-specific by name: confirmed no legitimate ring
+  anywhere else in the vendored data (Fiji, Russia) comes anywhere close to
+  that threshold, so it can't misfire on a real antimeridian crossing.
+- `fillGeometry`: now filters a polygon's rings through
+  `isPolarClosureRing` before running the existing ringIndex-based fill/cut
+  logic (first remaining ring = fill, rest = cut/holes), instead of the
+  original code's fixed assumption that ring index 0 is always the real
+  exterior boundary. Skips the whole polygon element only if *every* ring
+  turns out to be synthetic (nothing left to draw).
+- `strokeGeometry`: same `isPolarClosureRing` skip per-ring, so the
+  synthetic ring doesn't get an outline stroke either.
+
+### Decisions
+- **Filter the ring out before assigning fill/cut roles, not skip the whole
+  polygon element.** The first, simpler fix (skip the whole element)
+  actually worked to remove the line, but at the cost of losing real
+  coastline detail that happened to be packaged in the same polygon element
+  as the synthetic ring -- caught by reasoning through *why* the shape still
+  looked cruder than expected after the first fix, not because it was
+  visibly broken.
+- **Detected generically by latitude, not by feature name/ID.** Keeps the
+  fix correct for any other Natural Earth feature that might have the same
+  polar-closure quirk, without hardcoding "Antarctica" anywhere.
+
+### Deferred / not yet implemented
+- World-view zoom still renders coastlines (Antarctica included) at a
+  visibly coarser resolution than Google Maps' equivalent low-zoom tiles --
+  confirmed this is the existing zoom-based LOD system working as designed
+  (every country simplifies at low zoom, not just Antarctica), not a bug.
+  Raising the base/world-view LOD resolution is a separate performance
+  tradeoff, not pursued this pass.
+
+---
+
 ## 2026-08-25 — Unified Play/scrub for scene + audio tracks
 
 ### Summary
