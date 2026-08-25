@@ -35,6 +35,13 @@ interface SceneStore {
   updateScene: (id: string, scene: Scene) => void;
   stopEditingScene: () => void;
   currentSceneIndex: number | null;
+  // Wall-clock ms timestamp of the current scene's most recent dispatch --
+  // the one piece of state needed for Timeline.tsx's shared playhead to
+  // compute "how far into the current scene are we" on every animation
+  // frame (currentSceneIndex alone only says *which* scene, not progress
+  // within it). null whenever nothing is actively mid-dispatch (paused,
+  // jumped, or stopped).
+  currentSceneStartedAt: number | null;
   isPlaying: boolean;
   play: () => void;
   pause: () => void;
@@ -77,12 +84,12 @@ export const useSceneStore = create<SceneStore>((set, get) => {
     const { scenes, startFromWorldView } = get();
     if (index >= scenes.length) {
       clearHoldTimer();
-      set({ isPlaying: false, currentSceneIndex: null });
+      set({ isPlaying: false, currentSceneIndex: null, currentSceneStartedAt: null });
       return;
     }
     const scene = scenes[index];
     dispatchScene(scene, isFirstDispatch ? (startFromWorldView ? "world" : "instant") : undefined);
-    set({ currentSceneIndex: index });
+    set({ currentSceneIndex: index, currentSceneStartedAt: Date.now() });
     holdTimer = setTimeout(() => playFrom(index + 1), scene.duration * 1000);
   };
 
@@ -107,6 +114,7 @@ export const useSceneStore = create<SceneStore>((set, get) => {
         scenes: state.scenes.filter((scene) => scene.id !== id),
         isPlaying: false,
         currentSceneIndex: null,
+        currentSceneStartedAt: null,
         // Deleting the scene currently being edited would otherwise leave
         // editingSceneId pointing at nothing -- drop out of edit mode too.
         editingSceneId: state.editingSceneId === id ? null : state.editingSceneId,
@@ -128,7 +136,12 @@ export const useSceneStore = create<SceneStore>((set, get) => {
       const { scenes } = get();
       if (index < 0 || index >= scenes.length) return;
       dispatchScene(scenes[index]);
-      set({ isPlaying: false, currentSceneIndex: index, editingSceneId: scenes[index].id });
+      set({
+        isPlaying: false,
+        currentSceneIndex: index,
+        editingSceneId: scenes[index].id,
+        currentSceneStartedAt: null,
+      });
     },
     editingSceneId: null,
     updateScene: (id, scene) =>
@@ -138,6 +151,7 @@ export const useSceneStore = create<SceneStore>((set, get) => {
       })),
     stopEditingScene: () => set({ editingSceneId: null }),
     currentSceneIndex: null,
+    currentSceneStartedAt: null,
     isPlaying: false,
     // No transition/hold split (roadmap.md section 16, explicitly deferred)
     // -- resuming from Pause re-dispatches and re-holds the current scene
@@ -158,7 +172,7 @@ export const useSceneStore = create<SceneStore>((set, get) => {
     },
     pause: () => {
       clearHoldTimer();
-      set({ isPlaying: false });
+      set({ isPlaying: false, currentSceneStartedAt: null });
     },
     startFromWorldView: false,
     setStartFromWorldView: (value) => set({ startFromWorldView: value }),

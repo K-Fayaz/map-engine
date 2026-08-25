@@ -2,7 +2,33 @@
 // used by the ruler (TimelineRuler.tsx) and, next 6.2 step, the scene
 // block track itself, so tick positions and block widths stay on the same
 // pixel-per-second scale instead of drifting independently.
+import type { Scene } from "./scenes";
+
 export const PIXELS_PER_SECOND = 40;
+
+// Sum of durations of every scene before `index` -- the timeline-seconds
+// offset at which scene `index` begins. Used both to snap a scrub target to
+// a scene's start and to compute the shared playhead's position while a
+// scene is mid-playback (Timeline.tsx).
+export function cumulativeSceneStart(scenes: Scene[], index: number): number {
+  let sum = 0;
+  for (let i = 0; i < index && i < scenes.length; i++) sum += scenes[i].duration;
+  return sum;
+}
+
+// Which scene contains timeline-second `t` -- floors to the scene the time
+// falls inside (never the next one), matching the approved scrub behavior:
+// dragging into the middle of a scene lands at that scene's own start, not
+// past it. Returns -1 for an empty scene list.
+export function sceneIndexAtTime(scenes: Scene[], t: number): number {
+  if (scenes.length === 0) return -1;
+  let cumulative = 0;
+  for (let i = 0; i < scenes.length; i++) {
+    cumulative += scenes[i].duration;
+    if (t < cumulative) return i;
+  }
+  return scenes.length - 1;
+}
 
 // Picks a "nice" tick interval (seconds) so a ruler spanning
 // totalDurationSeconds shows roughly targetTickCount ticks -- avoids

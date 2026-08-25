@@ -3,13 +3,24 @@
   flex-direction: column;
 }
 
-.timeline-playback-toggle {
-  align-self: flex-start;
+.timeline-controls-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
   margin: 12px 12px 0;
-  padding: 6px 16px;
-  font-family: sans-serif;
-  font-size: 13px;
-  font-weight: 600;
+}
+
+/* Shared square icon-button style -- Play/Pause and Export (Timeline.tsx)
+   both render an inline SVG glyph instead of a text label now, so both use
+   this rather than the old text-button padding/sizing. */
+.timeline-icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
   color: #e6e6e6;
   background: #2c2f38;
   border: 1px solid #383b42;
@@ -17,11 +28,11 @@
   cursor: pointer;
 }
 
-.timeline-playback-toggle:hover:not(:disabled) {
+.timeline-icon-btn:hover:not(:disabled) {
   background: #383b42;
 }
 
-.timeline-playback-toggle:disabled {
+.timeline-icon-btn:disabled {
   color: #6a6e76;
   cursor: default;
 }
@@ -29,8 +40,7 @@
 .timeline-world-view-toggle {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin: 8px 12px 0;
+  gap: 8px;
   font-family: sans-serif;
   font-size: 12px;
   color: #9a9ea6;
@@ -38,32 +48,51 @@
   user-select: none;
 }
 
-.timeline-export-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin: 8px 12px 0;
+/* Visually hidden but still focusable/clickable -- the label's own click
+   target covers the whole row, and this keeps native checkbox semantics
+   (keyboard toggling, screen readers) instead of building a div-based
+   switch from scratch. */
+.timeline-toggle-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
 }
 
-.timeline-export-btn {
-  padding: 6px 16px;
-  font-family: sans-serif;
-  font-size: 13px;
-  font-weight: 600;
-  color: #e6e6e6;
-  background: #2c2f38;
-  border: 1px solid #383b42;
-  border-radius: 4px;
-  cursor: pointer;
-}
-
-.timeline-export-btn:hover:not(:disabled) {
+.timeline-toggle-track {
+  flex-shrink: 0;
+  position: relative;
+  width: 34px;
+  height: 18px;
   background: #383b42;
+  border: 1px solid #4a4e57;
+  border-radius: 999px;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
 }
 
-.timeline-export-btn:disabled {
-  color: #6a6e76;
-  cursor: default;
+.timeline-toggle-thumb {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 14px;
+  height: 14px;
+  background: #e6e6e6;
+  border-radius: 50%;
+  transition: transform 0.15s ease;
+}
+
+.timeline-toggle-input:checked + .timeline-toggle-track {
+  background: #5b8def;
+  border-color: #5b8def;
+}
+
+.timeline-toggle-input:checked + .timeline-toggle-track .timeline-toggle-thumb {
+  transform: translateX(16px);
+}
+
+.timeline-toggle-input:focus-visible + .timeline-toggle-track {
+  box-shadow: 0 0 0 2px #5b8def66;
 }
 
 .timeline-export-progress {
@@ -103,6 +132,11 @@
      viewport that scrolls its own, often-wider content, instead of the
      whole panel (controls included) scrolling together. */
   overflow-x: auto;
+  /* Covers the ruler too (.timeline-tracks' own user-select: none doesn't
+     reach it, being a sibling, not an ancestor) -- dragging the playhead
+     starts above .timeline-tracks, over the ruler's timestamp labels, and
+     was still selecting that text without this. */
+  user-select: none;
 }
 
 .timeline-empty {
@@ -110,6 +144,71 @@
   font-size: 13px;
   color: #9a9ea6;
   padding: 12px;
+}
+
+.timeline-tracks {
+  /* Positioning context for .timeline-shared-playhead, which spans both
+     .timeline-track and .timeline-audio-row below it. */
+  position: relative;
+  /* Without this, dragging the playhead across scene blocks selects their
+     text (entity name/duration/zoom%) as a side effect of the pointer
+     drag, same as any click-drag over text would. */
+  user-select: none;
+}
+
+.timeline-shared-playhead {
+  /* Wider than the visible line itself (.timeline-shared-playhead-line)
+     so it's actually grabbable -- centered on the true time position via
+     the negative margin, rather than requiring a pixel-perfect grab on a
+     1.5px-wide target. */
+  position: absolute;
+  /* Extends up past .timeline-tracks' own top into the ruler above it
+     (TimelineRuler.css's .timeline-ruler height, 24px) so the pin sits
+     right at the timestamp labels instead of stopping at the scene
+     track's edge. */
+  top: -24px;
+  bottom: 0;
+  width: 11px;
+  margin-left: -5px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  cursor: ew-resize;
+  touch-action: none;
+  z-index: 2;
+}
+
+/* Small flag-shaped pin at the very top (rectangle + downward point),
+   matching a standard video-editor scrubber head -- distinct from the
+   thin line running the rest of the way down, not just a plain line for
+   the whole height. */
+.timeline-shared-playhead-pin {
+  flex-shrink: 0;
+  width: 10px;
+  height: 6px;
+  background: #e8a33d;
+  border-radius: 2px 2px 0 0;
+  position: relative;
+}
+
+.timeline-shared-playhead-pin::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 4px solid #e8a33d;
+}
+
+.timeline-shared-playhead-line {
+  width: 1.5px;
+  flex: 1;
+  background: #e8a33d;
+  pointer-events: none;
 }
 
 .timeline-track {

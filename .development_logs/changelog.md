@@ -5,6 +5,149 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-25 — Unified Play/scrub for scene + audio tracks
+
+### Summary
+Direct follow-on to the reference-audio entry below: once a story had both
+scenes and an audio clip, previewing them together required clicking two
+separate Play buttons (video Play/Pause, a standalone "▶ Audio" button) --
+practically impossible to trigger at the same instant by hand. Discussed
+the fix with the user before coding (`EnterPlanMode`): one shared Play
+control and one shared scrub playhead spanning both tracks, like a normal
+video editor, while respecting that scene/camera playback -- unlike
+audio -- can't be scrubbed to an arbitrary mid-point (`jumpToScene` only
+ever snaps to a scene's *start*; there's no mid-scene seek anywhere in the
+live path). Landed on: scrubbing floors to the containing scene's start
+(never skips ahead of the drop point), and if video/audio have different
+total lengths each keeps playing independently until it individually
+finishes -- confirmed explicitly with the user rather than assumed.
+
+Iterated several more rounds after the initial merge shipped, each a
+direct user report against the running app: the scrub line needed to
+actually be draggable, not just click-to-seek; dragging turned out to
+re-snap (and re-dispatch the scene + jump audio) on *every pointer move*,
+which pinned the visible line at the current scene's start for as long as
+the pointer stayed inside it instead of sliding -- fixed by separating
+live visual tracking during a drag from the actual snap-and-commit, which
+now only happens once, on release. Also fixed dragging selecting the
+scene blocks' text underneath (`user-select: none`, plus a
+`preventDefault()` belt-and-braces for the race where native selection
+starts before the CSS applies), gave the toggle/Play/Export row a visual
+pass (reordered, animated switch, icon-only buttons) per direct
+before/after screenshots the user shared, and reshaped the playhead from
+a plain line into a video-editor-style pin (flag head + thin shaft,
+extended up to touch the ruler's timestamps) against a reference image.
+
+### Changes
+
+**`src/map/sceneStore.ts`**
+- New `currentSceneStartedAt: number | null` -- wall-clock ms timestamp of
+  the current scene's most recent dispatch, set in `playFrom` on every
+  dispatch and cleared on `pause`/`jumpToScene`/end-of-playback. The one
+  piece of state `currentSceneIndex` alone didn't carry: not just *which*
+  scene is current, but how far into it playback actually is, which the
+  shared playhead needs to draw a continuously moving line instead of one
+  that only jumps at scene boundaries.
+
+**`src/map/timelineLayout.ts`**
+- New `cumulativeSceneStart(scenes, index)` and `sceneIndexAtTime(scenes,
+  t)` pure helpers, shared by both the scrub-seek snapping logic and the
+  live progress calculation -- `sceneIndexAtTime` floors to the scene
+  containing `t`, matching the approved "never skip ahead of the drop
+  point" rule.
+
+**`src/map/Timeline.tsx`**
+- Merged the video Play/Pause and the old standalone Audio button into one
+  `togglePlayback` -- starts/pauses `sceneStore.play()`/`pause()` and the
+  `<audio>` element together. Disabled only when there are neither scenes
+  nor an audio clip (previously gated on scenes alone, which blocked
+  audio-only preview before any scene existed).
+- New `sharedPlayheadSeconds` state driven by a `requestAnimationFrame`
+  loop (reading fresh `useSceneStore.getState()` each frame, not a stale
+  closure) that follows scene-elapsed time while a scene is playing, hands
+  off to `audio.currentTime` once scene playback stops but audio is still
+  going, and otherwise holds still at wherever it was last scrubbed/jumped
+  to -- exactly the "each keeps playing independently" behavior agreed on.
+- New unified `seekToTime`/`seekToSceneIndex`: snaps to the containing
+  scene's start via `jumpToScene`, then syncs `audio.currentTime` to that
+  same instant. Wired to the waveform's click-to-seek and each scene
+  block's click (both previously separate, unsynced seeks).
+- New drag-to-scrub on the playhead itself (`startPlayheadDrag`/
+  `onPlayheadDragMove`/`endPlayheadDrag`, pointer-capture based, same
+  pattern the existing resize-handle drag already used). Deliberately
+  does *not* call `seekToTime` on every move -- that would re-jump the
+  scene/audio on every pixel and pin the line at the current scene's start
+  the whole time the pointer is inside it. Instead the line follows the
+  raw cursor position in real time during the drag, and the actual
+  scene-jump + audio-sync snap happens once, on `pointerup`.
+- Reordered the top row to toggle → Play/Pause → Export (previously
+  Play → toggle → Export), all three (plus Export's progress/cancel/
+  status) now sharing one `.timeline-controls-row` instead of three
+  stacked rows.
+- Play/Pause and Export are now icon-only (inline SVG: play triangle/pause
+  bars, an arrow-into-tray export glyph) instead of text labels, each with
+  `aria-label`/`title` since there's no visible text. "Start from world
+  view" is now an animated switch (checkbox kept for semantics/keyboard,
+  visually replaced by a sliding track+thumb) instead of a native
+  checkbox.
+
+**`src/map/AudioWaveform.tsx`**
+- Dropped the component's own playhead-line drawing (`playheadFraction`
+  prop and the line-drawing block) -- the shared line now renders once in
+  `Timeline.tsx`, layered across both tracks, instead of a separate line
+  per track.
+
+**`src/map/Timeline.css`**
+- `.timeline-tracks` wrapper (`position: relative`) as the positioning
+  context for the new `.timeline-shared-playhead`, which extends 24px
+  above its own box (matching `TimelineRuler.css`'s ruler height) so the
+  pin reaches the timestamp labels rather than stopping at the track's
+  edge.
+- Playhead redesigned as a small amber (`#e8a33d`) flag-shaped pin
+  (rectangle + downward triangle point) atop a thin shaft, replacing the
+  original plain off-white line, against a reference screenshot the user
+  shared.
+- `user-select: none` moved up to `.timeline-scroll-area` (covers the
+  ruler too, a sibling `.timeline-tracks` alone didn't reach) so dragging
+  the playhead no longer selects scene-block text or ruler timestamps
+  underneath it.
+- New `.timeline-controls-row`/`.timeline-icon-btn`/`.timeline-toggle-*`
+  rules for the reordered row, icon buttons, and animated switch; removed
+  the now-unused `.timeline-playback-toggle`/`.timeline-export-btn` text-
+  button rules they replaced.
+
+### Decisions
+- **Floor-to-scene-start scrubbing, not nearest-boundary.** Confirmed
+  explicitly with the user (`AskUserQuestion`) rather than assumed --
+  dragging into the middle of a scene should never jump *past* the drop
+  point.
+- **Video and audio each keep playing independently past the other's
+  end**, not cut off at the shorter one -- also confirmed explicitly.
+  Verified in-browser (synthetic 12s audio clip injected directly into
+  `audioStore` via a dev-console dynamic import, since the file picker
+  itself needs the real Tauri shell -- same sandbox limitation as prior
+  sessions): the shared line tracked scene-elapsed time smoothly for the
+  first 7s of a 3s+4s story, then handed off to `audio.currentTime`
+  seamlessly through to 12s with no discontinuity.
+- **Drag updates the visual position live but only commits (scene jump +
+  audio sync) on release**, not on every `pointermove` -- the first
+  attempt re-snapped on every move, which visibly failed to slide (the
+  reported bug this fixes); separating "where the line is drawn" from
+  "when the actual seek happens" was the fix, not a snapping-algorithm
+  change.
+- **Icon-only Play/Export via inline SVG, no icon library** -- consistent
+  with the rest of the codebase's "no new dependency for something a
+  ~10-line inline implementation covers" pattern (same reasoning as the
+  Web Audio API waveform decode in the entry below).
+
+### Deferred / not yet implemented
+- Real end-to-end verification with an actual picked audio file (not the
+  synthetic in-console injection used here) -- deferred to the user's own
+  machine, same recurring sandbox limitation (no real Tauri launch here)
+  as every export/audio entry below.
+
+---
+
 ## 2026-08-24 — Reference audio track in Timeline (+ two timeline layout bugs)
 
 ### Summary
