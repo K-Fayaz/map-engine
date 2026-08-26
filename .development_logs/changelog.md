@@ -5,6 +5,147 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-26 — Political-map coloring (external palette) + Australia/Caspian bugs it exposed
+
+### Summary
+User wanted the map's look changed from one flat land color (white) + a
+plain teal ocean to a "political map" style -- each country its own color
+-- but explicitly did not want colors hardcoded per-country, since more map
+styles are planned later. Discussed the approach before writing anything:
+a small external config file exporting a color palette, with each country
+picking a color from it deterministically (hash of its own id) rather than
+a hardcoded per-country lookup table or full adjacency-based graph-coloring
+(the latter ruled out as disproportionate complexity for a cosmetic
+feature -- confirmed with the user, who agreed hash-based collisions
+between neighbors are an acceptable trade-off, same as the reference image
+they were matching). Planned via `EnterPlanMode` before implementation.
+
+Once shipped and the user confirmed it looked good, they spotted two
+countries/water-bodies rendering plain white instead of a palette color --
+Australia and the Caspian Sea -- and asked why. Investigated read-only
+first (no code changes) rather than guessing: both turned out to be real,
+pre-existing bugs in the underlying map data, invisible before this session
+only because the old flat white land color was indistinguishable from
+whatever was silently going wrong underneath.
+
+**Australia**: confirmed directly against the vendored
+`world-atlas/countries-50m.json` that Australia's mainland and a separate
+tiny feature, "Ashmore and Cartier Is." (an external territory with no ISO
+code of its own), both carry the same numeric id `"036"` -- the only
+duplicate id in the whole dataset (checked exhaustively via a Node script).
+The per-country fill-color lookup in `worldRenderer.ts` is keyed by this id
+in a `Map`, so the duplicate collides and Australia's own container can end
+up painted with the tiny island's geometry instead of its own -- while its
+outline (drawn straight from its own entity, not through that lookup) still
+renders correctly, producing exactly the observed symptom: a
+correctly-shaped, empty white country.
+
+**Caspian Sea**: a different, unrelated cause. It's classified as a "sea"
+entity, which by design gets no fill layer at all (only used for
+hit-testing/labels -- reasonable for open marine areas, per the code's own
+existing comment). Verified with a throwaway script against the vendored
+50m land silhouette data (point-in-polygon over a grid across the Caspian's
+real bounding box) that this coarse base layer does NOT properly hole the
+Caspian out at this resolution -- several points deep inside the Caspian's
+real extent test as "land." With no sea fill and an imperfect hole, the
+flawed land silhouette's own `LAND_COLOR` was showing through -- confirmed
+by pixel-sampling a screenshot of the running app: the "white" patch was
+exactly `#f5f5f2`, `LAND_COLOR` to the value, not a rendering fluke or an
+optical illusion against the new palette.
+
+A separate, related but *unresolved* question came up mid-session: the old
+hover/selection highlight was a fixed translucent orange fill tuned against
+a flat white base -- with country fills now varying, that fixed-hue
+overlay reads inconsistently (barely visible against yellow/orange
+countries, muddy against blue/purple/green ones). Three options were laid
+out for the user (neutral white wash + colored stroke; outline-only, no
+fill; keep colored fill but raise alpha) but the conversation moved to the
+Australia/Caspian bug investigation before a decision was made -- still
+open, see Deferred below.
+
+### Changes
+
+**New `src/map/mapColors.ts`**
+- `landPalette: number[]` -- 8 pastel hex colors matching the reference
+  image's tone.
+- `oceanColor: number` -- moved out of `worldRenderer.ts`'s local constant,
+  a light sky blue (`#aee2f2`) replacing the old flat teal.
+- `colorForCountry(id: string): number` -- deterministic FNV-1a-style hash
+  of the id, mod `landPalette.length`. Same country always gets the same
+  color across renders/LOD swaps/exports; no adjacency computation.
+
+**`src/map/worldRenderer.ts`**
+- `setResolution`'s per-country fill call now uses
+  `colorForCountry(c.entity.id)` instead of the old flat `LAND_COLOR`.
+  `LAND_COLOR` itself stays, still used for the coarse base `land`
+  silhouette layer underneath (a fallback, not meant to be visible once
+  countries are colored in -- see the Caspian bug above for what happens
+  when it *is* visible).
+- `OCEAN_COLOR` now sourced from `mapColors.ts`'s `oceanColor` instead of a
+  locally hardcoded literal; `LAKE_COLOR` (`= OCEAN_COLOR`) follows
+  automatically.
+- New: after building `seaEntities`, the Caspian Sea specifically is
+  looked up by name and given the same lake-style fill+stroke
+  (`LAKE_COLOR`/`LAKE_BORDER_COLOR`) as every real lake, added into the
+  existing `lakesLayer` (so it paints above countries/states, same as
+  other lakes, and a lake spanning into the middle of a country still
+  reads as one unbroken water shape). Its entity/type stays "sea" for
+  search and hit-testing -- only its paint changes, not its
+  classification.
+
+**`src/map/entities.ts`**
+- New `ASHMORE_AND_CARTIER_ID` constant; `buildCountryEntities` now gives
+  "Ashmore and Cartier Is." this synthetic id instead of letting it inherit
+  Australia's real `"036"` -- same fix shape as the existing
+  `NATURAL_EARTH_PSEUDO_CODES` workaround just above it for Kashmir's
+  non-standard `"KAS"` code.
+
+### Decisions
+- **Hash-based per-country coloring, not graph-coloring.** Confirmed with
+  the user before implementation (`AskUserQuestion`) -- adjacency-safe
+  coloring would guarantee no two touching countries share a color, but
+  needs real adjacency data/computation for a purely cosmetic feature;
+  occasional same-color neighbors are an accepted trade-off, matching the
+  reference image's own apparent behavior.
+- **One external color config file for now, not a full theme-switcher
+  system.** User explicitly scoped it down to this -- externalizing the
+  values so nothing's hardcoded, without building a multi-theme
+  registry/UI picker before there's a second real theme to switch to.
+- **Caspian fixed by reusing the lakes visual treatment, not by giving
+  "sea" entities a general fill.** Seas as a class are often large,
+  irregular, antimeridian-spanning marine regions where a always-on fill
+  risks looking wrong or costly elsewhere (the same reasoning already
+  documented for why seas skip hover-stroking); the Caspian specifically is
+  hydrologically a closed-basin lake, so treating it like one is correct,
+  not just convenient.
+- **Ashmore and Cartier Is. re-keyed with a synthetic id, not a generic
+  duplicate-id-dedup mechanism.** Confirmed via an exhaustive check that
+  it's the *only* duplicate id in the entire 50m country dataset -- a
+  known one-off Natural Earth quirk, handled the same targeted way the
+  codebase already handles Kashmir's pseudo-code, rather than adding
+  general collision-handling logic for a problem that has exactly one
+  instance.
+- **Diagnosed both bugs via direct data inspection and pixel-sampling
+  before writing any fix** -- a Node script confirmed the Australia/Ashmore
+  id collision was the only duplicate in the dataset; a throwaway
+  point-in-polygon script over the Caspian's real bounding box confirmed
+  the land silhouette's imperfect hole; a screenshot pixel-sample confirmed
+  the visible color was exactly `LAND_COLOR`. Not guessed from visual
+  inspection alone.
+
+### Deferred / not yet implemented
+- **Hover/selection highlight color scheme.** The existing fixed
+  translucent-orange fill (tuned for the old flat-white land color) reads
+  inconsistently now that country fills vary. Three options discussed with
+  the user (neutral white wash + colored stroke; outline-only; raise the
+  existing fill's alpha) -- no decision made yet, still open.
+- No general audit for other Natural Earth data quirks of either kind
+  (other duplicate ids, other seas/lakes with a similar land-silhouette
+  gap) -- only the two instances the user actually spotted were
+  investigated and fixed.
+
+---
+
 ## 2026-08-25 — Equirectangular to Web Mercator, and getting the default view right
 
 ### Summary

@@ -405,9 +405,25 @@ export function findEntityAt(entities: Entity[], lon: number, lat: number): Enti
   });
 }
 
+// world-atlas's countries-50m/10m data tags "Ashmore and Cartier Is." (an
+// external Australian territory with no ISO code of its own) with
+// Australia's own numeric id "036" -- the only duplicate id in either
+// dataset. Left as-is, the per-country fill-color lookup (keyed by id, see
+// worldRenderer.ts's setResolution) collides: only one of the two entries
+// survives in the map, so Australia's own container can end up painted with
+// this tiny island's geometry/color instead of its own, while its outline
+// (drawn straight from its own entity, not through that lookup) still
+// renders correctly -- a real country-shaped outline with no fill. Given a
+// synthetic distinct id here, same fix shape as NATURAL_EARTH_PSEUDO_CODES
+// below for Kashmir's non-standard "KAS" code.
+const ASHMORE_AND_CARTIER_ID = "036-ashmore-cartier";
+
 export function buildCountryEntities(countries: GeoFeatureCollection): Entity[] {
   return countries.features.map((f) => ({
-    id: f.id ?? f.properties.name ?? "",
+    id:
+      f.properties.name === "Ashmore and Cartier Is."
+        ? ASHMORE_AND_CARTIER_ID
+        : (f.id ?? f.properties.name ?? ""),
     name: f.properties.name ?? "",
     type: "country",
     geometry: f.geometry,

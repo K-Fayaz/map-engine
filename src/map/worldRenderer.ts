@@ -26,6 +26,7 @@ import {
   WORLD_HEIGHT,
 } from "./render";
 import type { Camera } from "./camera";
+import { colorForCountry, oceanColor } from "./mapColors";
 
 // The scene-graph construction, highlight drawing, and camera-application
 // pieces of what used to be one large closure inside MapCanvas.tsx's mount
@@ -53,7 +54,7 @@ const SHOW_LABELS = import.meta.env.VITE_SHOW_LABELS === "true";
 // only the visible Graphics/layer construction is skipped when this is off.
 const SHOW_RIVERS = import.meta.env.VITE_SHOW_RIVERS === "true";
 
-const OCEAN_COLOR = 0x068494;
+const OCEAN_COLOR = oceanColor;
 const LAND_COLOR = 0xf5f5f2;
 const STATE_BORDER_COLOR = 0xa8a8a8;
 const STATE_LABEL_STYLE: LabelStyle = { fontSize: 10, color: 0x555555 };
@@ -302,6 +303,22 @@ export function buildWorldScene(screenWidth: number, screenHeight: number): Worl
   // highlight overlay.
   const seaEntities = buildSeaEntities(loadSeasData());
 
+  // The Caspian Sea is hydrologically a closed-basin lake (no ocean outlet)
+  // but Natural Earth classifies it under marine polygons, not lakes -- so
+  // unlike a real lake it gets no fill from the loop above. With nothing
+  // painted over it, the coarse 50m land silhouette's imperfect hole there
+  // shows through as bare land color instead of water. Given the same
+  // lake-style fill+stroke as every real lake here (reusing its existing
+  // sea entity as-is -- search/hit-testing stay keyed to it as a "sea",
+  // only its paint changes) rather than reclassifying its entity type.
+  const caspianSea = seaEntities.find((e) => e.name === "Caspian Sea");
+  if (caspianSea) {
+    const c = new CountryContainer(caspianSea);
+    fillGeometry(c.fill, caspianSea.geometry as AreaGeometry, LAKE_COLOR);
+    strokeGeometry(c.stroke, caspianSea.geometry as AreaGeometry, LAKE_BORDER_COLOR);
+    lakesLayer.addChild(c);
+  }
+
   const allEntities = [
     ...borderEntities,
     ...stateEntities,
@@ -419,7 +436,7 @@ export function buildWorldScene(screenWidth: number, screenHeight: number): Worl
         const { c, match, weight } = items[index];
         if (processedAny && chunkWeight + weight > budget) break;
         c.fill.clear();
-        if (match) fillGeometry(c.fill, match.geometry as AreaGeometry, LAND_COLOR);
+        if (match) fillGeometry(c.fill, match.geometry as AreaGeometry, colorForCountry(c.entity.id));
         chunkWeight += weight;
         processedAny = true;
         index++;
