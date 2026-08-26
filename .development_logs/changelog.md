@@ -5,6 +5,31 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-26 — Bug fix: scene duration label overflow on resize
+
+### Summary
+User reported that dragging a scene block's resize handle in the Timeline
+showed a duration label with a long run of decimals (e.g.
+`2.9016601562499996s`), overflowing the block. Root cause: `onResizeMove`
+(`Timeline.tsx`) derives duration directly from raw pixel delta ÷
+`PIXELS_PER_SECOND`, an unrounded float, stored as-is by `resizeScene` and
+rendered with no formatting.
+
+### Changes
+**`src/map/Timeline.tsx`**
+- `onResizeMove` now rounds the computed duration to the nearest tenth of a
+  second (`Math.round(rawDuration * 10) / 10`) before calling
+  `resizeScene`, instead of passing the raw pixel-derived float through
+  unrounded.
+
+### Decisions
+- **Rounded at the source (the resize handler), not just at display time.**
+  Keeps `scene.duration` itself clean for anything else that reads it
+  (export, timeline math), rather than papering over long floats with a
+  `toFixed` only in the label.
+
+---
+
 ## 2026-08-26 — Political-map coloring (external palette) + Australia/Caspian bugs it exposed
 
 ### Summary

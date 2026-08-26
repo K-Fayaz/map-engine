@@ -202,7 +202,11 @@ export function Timeline() {
   const onResizeMove = (e: React.PointerEvent) => {
     if (!dragRef.current) return;
     const deltaSeconds = (e.clientX - dragRef.current.startX) / PIXELS_PER_SECOND;
-    resizeScene(dragRef.current.sceneId, dragRef.current.startDuration + deltaSeconds);
+    const rawDuration = dragRef.current.startDuration + deltaSeconds;
+    // Round to the nearest tenth of a second -- raw pixel-delta division
+    // otherwise produces long floating-point durations (e.g.
+    // 2.9016601562499996) that overflow the scene block's duration label.
+    resizeScene(dragRef.current.sceneId, Math.round(rawDuration * 10) / 10);
   };
 
   const endResize = (e: React.PointerEvent) => {
