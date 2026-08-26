@@ -1,11 +1,9 @@
 import type { Entity } from "./entities";
 import { computeFramingBounds } from "./entities";
-import { project } from "./render";
+import { project, worldViewCamera } from "./render";
 import {
-  clampCamera,
   focusOnBounds,
   tweenCamera,
-  MIN_ZOOM,
   type Camera,
   type WorldBounds,
 } from "./camera";
@@ -30,13 +28,6 @@ export interface ResolvedState {
   highlightedEntityId: string | null;
 }
 
-// Same baseline live playback uses for a world view: MIN_ZOOM, world exactly
-// fills the screen, no panning. Also `CameraStart === "world"`'s fixed
-// glide-from point (MapCanvas.tsx's onFocusRequest, fromWorldView branch --
-// deliberately no zoomMultiplier applied there, unlike a scripted world pan
-// target itself).
-const WORLD_VIEW_CAMERA: Camera = { x: 0, y: 0, zoom: MIN_ZOOM };
-
 // Sum of every scene's duration -- the export loop's `totalFrames = ceil(
 // timelineDuration(scenes) * fps)`.
 export function timelineDuration(scenes: Scene[]): number {
@@ -49,13 +40,13 @@ function clamp(value: number, min: number, max: number): number {
 
 // Resolves a scene's own camera.pan action (if it has one) into a target
 // Camera -- mirrors MapCanvas.tsx's onFocusRequest exactly: a world pan
-// (no targetEntityId) bypasses focusOnBounds for a fixed
-// {x:0,y:0,zoom:MIN_ZOOM*zoomMultiplier} baseline; an entity pan projects
-// that entity's antimeridian-aware framing bounds and runs focusOnBounds
-// with padding=0.8 (matching MapCanvas's hardcoded value). Returns null for
-// a scene with no camera.pan action at all (e.g. a bare clearHighlight, or
-// "hold") -- the caller inherits the previous scene's resting camera for
-// those, same as live playback never moving the camera for them.
+// (no targetEntityId) uses the shared worldViewCamera (render.ts) baseline;
+// an entity pan projects that entity's antimeridian-aware framing bounds
+// and runs focusOnBounds with padding=0.8 (matching MapCanvas's hardcoded
+// value). Returns null for a scene with no camera.pan action at all (e.g. a
+// bare clearHighlight, or "hold") -- the caller inherits the previous
+// scene's resting camera for those, same as live playback never moving the
+// camera for them.
 function resolveSceneTargetCamera(
   scene: Scene,
   entities: Entity[],
@@ -72,12 +63,7 @@ function resolveSceneTargetCamera(
   const zoomMultiplier = (typeof zoomPercent === "number" ? zoomPercent : 100) / 100;
 
   if (typeof targetEntityId !== "string") {
-    return clampCamera(
-      { x: 0, y: 0, zoom: MIN_ZOOM * zoomMultiplier },
-      screenWidth,
-      screenHeight,
-      maxZoom,
-    );
+    return worldViewCamera(screenWidth, screenHeight, baseScaleX, baseScaleY, maxZoom, zoomMultiplier);
   }
 
   const entity = entities.find((candidate) => candidate.id === targetEntityId);
@@ -148,12 +134,15 @@ function buildPerSceneTable(
     // clearHighlight (which never touches the camera live either). Falls
     // back to the world-view baseline only if this is scene 0 and it has no
     // camera action of its own (e.g. a story that opens on a Hold).
-    const to: Camera = resolvedTarget ?? previousCamera ?? WORLD_VIEW_CAMERA;
+    const to: Camera =
+      resolvedTarget ??
+      previousCamera ??
+      worldViewCamera(screenWidth, screenHeight, baseScaleX, baseScaleY, maxZoom);
 
     const from =
       perScene.length === 0
         ? cameraStart === "world"
-          ? WORLD_VIEW_CAMERA
+          ? worldViewCamera(screenWidth, screenHeight, baseScaleX, baseScaleY, maxZoom)
           : to // "instant": scene 0 starts already at its target, no glide
         : (previousCamera as Camera);
 
@@ -198,7 +187,10 @@ export function resolveAt(
   cameraStart: "instant" | "world",
 ): ResolvedState {
   if (scenes.length === 0) {
-    return { camera: WORLD_VIEW_CAMERA, highlightedEntityId: null };
+    return {
+      camera: worldViewCamera(screenWidth, screenHeight, baseScaleX, baseScaleY, maxZoom),
+      highlightedEntityId: null,
+    };
   }
 
   const perScene = buildPerSceneTable(

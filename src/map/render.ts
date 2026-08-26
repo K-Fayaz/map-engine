@@ -1,21 +1,35 @@
 import { Container, Graphics, BitmapText, BitmapFont } from "pixi.js";
 import type { AreaGeometry, LineGeometry, Position } from "./loadWorldData";
 import type { Entity } from "./entities";
+import { clampCamera, MIN_ZOOM, type Camera } from "./camera";
 
 const BORDER_COLOR = 0x4a4a4a;
 
 // Fixed world-space size geometry is projected into, decoupled from actual
 // screen size. Geometry is built once against these constants; pan/zoom is
 // then a cheap Container-level transform on top (see camera.ts /
-// MapCanvas.tsx), not a re-projection. 2:1 ratio matches the projection's
-// natural 360:180 degree range. The exact numbers don't matter -- only that
-// they stay constant.
+// MapCanvas.tsx), not a re-projection. Square (1:1), matching standard Web
+// Mercator's own conformal base aspect (every tile-based web map -- Google/
+// OSM/Mapbox -- uses the same square ratio) -- not the 2:1 the previous
+// equirectangular projection used, which would apply Mercator's shape inside
+// the wrong-shaped box. The exact numbers don't matter -- only that they
+// stay constant and equal to each other.
 export const WORLD_WIDTH = 2000;
-export const WORLD_HEIGHT = 1000;
+export const WORLD_HEIGHT = 2000;
+
+// Standard Web Mercator clip latitude (Google/OSM/Mapbox all use this same
+// value) -- true Mercator sends the poles to infinite y, so latitude must be
+// clamped before projecting. Real Antarctic coastline in the vendored data
+// only reaches ~-85.2 deg (see isPolarClosureRing below), so this trims a
+// negligible sliver, not a visible chunk.
+const MAX_MERCATOR_LAT = 85.0511287798;
 
 export function project(lon: number, lat: number): [number, number] {
+  const clampedLat = Math.max(-MAX_MERCATOR_LAT, Math.min(MAX_MERCATOR_LAT, lat));
   const x = ((lon + 180) / 360) * WORLD_WIDTH;
-  const y = ((90 - lat) / 180) * WORLD_HEIGHT;
+  const latRad = (clampedLat * Math.PI) / 180;
+  const mercN = Math.log(Math.tan(Math.PI / 4 + latRad / 2));
+  const y = (0.5 - mercN / (2 * Math.PI)) * WORLD_HEIGHT;
   return [x, y];
 }
 
@@ -24,8 +38,36 @@ export function project(lon: number, lat: number): [number, number] {
 // camera.ts's screenToWorld) back into lon/lat for pointInPolygon.
 export function unproject(x: number, y: number): [number, number] {
   const lon = (x / WORLD_WIDTH) * 360 - 180;
-  const lat = 90 - (y / WORLD_HEIGHT) * 180;
+  const mercN = (0.5 - y / WORLD_HEIGHT) * 2 * Math.PI;
+  const lat = (2 * Math.atan(Math.exp(mercN)) - Math.PI / 2) * (180 / Math.PI);
   return [lon, lat];
+}
+
+// The shared "default World view" camera -- {x:0, y:0, zoom:MIN_ZOOM} --
+// centralized here instead of four call sites (MapCanvas.tsx's initial
+// camera, its "Pan to World" case, its "Start from world view" glide-start,
+// and timelineResolver.ts's equivalent world-pan/no-prior-scene fallback)
+// each independently re-hardcoding the same literal. Once worldRenderer.ts's
+// applyViewFit cover-fits the world to the canvas (fills it completely, no
+// letterboxing), zoom=MIN_ZOOM already means exactly "the world fills the
+// screen" -- an earlier attempt to derive this via focusOnBounds against a
+// deliberately tighter latitude band (to shrink the poles' visual share of
+// a *contain-fit* default view) turned out to be a dead end once cover-fit
+// made that unnecessary: keeping full longitude width always pinned the
+// focusOnBounds-derived zoom at exactly 1 anyway, so the extra machinery
+// added complexity for no remaining benefit. `screenWidth`/`screenHeight`/
+// `baseScaleX`/`baseScaleY` are unused here now, kept only so call sites
+// don't need to change if this ever needs bounds-based framing again.
+// `zoomMultiplier` supports a Pan-to-World scene's own Zoom% field.
+export function worldViewCamera(
+  screenWidth: number,
+  screenHeight: number,
+  _baseScaleX: number,
+  _baseScaleY: number,
+  maxZoom: number,
+  zoomMultiplier: number = 1,
+): Camera {
+  return clampCamera({ x: 0, y: 0, zoom: MIN_ZOOM * zoomMultiplier }, screenWidth, screenHeight, maxZoom);
 }
 
 function toPolygons(geometry: AreaGeometry) {
@@ -100,6 +142,54 @@ function isPolarClosureRing(ring: Position[]): boolean {
   return ring.every(([, lat]) => 90 - Math.abs(lat) < POLE_LAT_EPSILON);
 }
 
+// After splitAtAntimeridian's merge step, a ring whose real coastline
+// sweeps through (almost) the full 360° of longitude while staying near
+// one pole -- Antarctica is the only such case in the vendored data --
+// still has one unresolved "wrap": its own first and last point sit on
+// opposite sides of the antimeridian (still >180° apart even after
+// merging), and auto-closing that with a single straight edge cuts a long
+// diagonal chord across most of the map. Measured concretely: Antarctica's
+// ring closes from (179.622°, -84.268°) to (-180°, -84.352°) -- a real,
+// short (~0.4°) coastline connection geographically, but a chord spanning
+// ~1998 of the map's 2000-unit width once projected, drawn by both the
+// fill and the border stroke.
+//
+// Fixed by routing that closing edge along the map's own border instead:
+// out to the nearest edge (lon = +-180) at the point's own latitude, down
+// to the pole itself (lat = +-90 -- project()'s own MAX_MERCATOR_LAT clamp
+// already pulls this to the map's real bottom/top edge, no special-casing
+// needed here), across to the other endpoint's edge, then the existing
+// auto-close finishes the connection -- right-edge-down, bottom-edge-
+// across, left-edge-up, instead of a diagonal chord through the middle.
+// Exactly how any atlas draws a pole-sweeping landmass on a flat,
+// non-wrapping map.
+//
+// Deliberately only used by fillGeometry/strokeGeometry below, not folded
+// into splitAtAntimeridian itself -- that function is also used by
+// entities.ts for computeArea and point-in-polygon hit-testing, where
+// inserting extra boundary points would wrongly inflate Antarctica's
+// computed area and hit-test region. Gated on "every point of this piece
+// is past +-60° latitude" so ordinary, non-polar antimeridian crossings
+// (Russia's Chukotka peninsula, Fiji, the USA's Aleutians) are never
+// affected -- their own closing chord is comparatively short/subtle and
+// stays exactly as splitAtAntimeridian already produces it, an accepted,
+// documented imperfection, not something to touch here.
+function closePolarWrap(piece: Position[]): Position[] {
+  const first = piece[0];
+  const last = piece[piece.length - 1];
+  if (Math.abs(last[0] - first[0]) <= 180) return piece;
+
+  const allSouth = piece.every(([, lat]) => lat < -60);
+  const allNorth = piece.every(([, lat]) => lat > 60);
+  if (!allSouth && !allNorth) return piece;
+
+  const poleLat = allSouth ? -90 : 90;
+  const lastEdgeLon = last[0] > 0 ? 180 : -180;
+  const firstEdgeLon = first[0] > 0 ? 180 : -180;
+
+  return [...piece, [lastEdgeLon, last[1]], [lastEdgeLon, poleLat], [firstEdgeLon, poleLat]];
+}
+
 // `alpha` defaults to 1 (fully opaque, existing behavior for land/country
 // fills) -- overridable for translucent highlight overlays (see
 // MapCanvas.tsx's hover/selection highlight).
@@ -122,7 +212,7 @@ export function fillGeometry(
     const realRings = rings.filter((ring) => !isPolarClosureRing(ring));
     if (realRings.length === 0) continue;
     realRings.forEach((ring, ringIndex) => {
-      for (const piece of splitAtAntimeridian(ring)) {
+      for (const piece of splitAtAntimeridian(ring).map(closePolarWrap)) {
         const points = projectPoints(piece);
         graphics.poly(points, true);
         if (ringIndex === 0) {
@@ -165,7 +255,7 @@ export function strokeGeometry(graphics: Graphics, geometry: AreaGeometry, color
       // ring itself, not the rest of this polygon's real rings (which
       // includes Antarctica's actual detailed coastline).
       if (isPolarClosureRing(ring)) continue;
-      for (const piece of splitAtAntimeridian(ring)) {
+      for (const piece of splitAtAntimeridian(ring).map(closePolarWrap)) {
         const points = projectPoints(piece);
         graphics.poly(points, true).stroke({ width: 1, color, pixelLine: true });
       }

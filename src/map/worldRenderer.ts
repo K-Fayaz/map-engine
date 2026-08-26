@@ -163,14 +163,34 @@ export function buildWorldScene(screenWidth: number, screenHeight: number): Worl
   let viewH = 0;
   let letterboxX = 0;
   let letterboxY = 0;
+  // "Cover" fit (like CSS background-size: cover, and how every real map
+  // library -- Google/Leaflet/Mapbox -- fits its base layer), not
+  // "contain": picks the LARGER per-axis scale so the world always fills
+  // the canvas completely on both axes, cropping whichever axis has
+  // excess, instead of picking the smaller scale and padding the rest with
+  // letterbox/pillarbox bars. Matters specifically because WORLD_WIDTH ===
+  // WORLD_HEIGHT (square, required for undistorted Web Mercator) while a
+  // real canvas almost never is -- contain-fitting a square into a
+  // landscape or portrait canvas wastes space and, worse, was forcing the
+  // *entire* clipped latitude range into view at zoom=1 regardless of
+  // canvas shape (Antarctica/the poles visually ballooning to dominate the
+  // default view -- confirmed via a failed earlier attempt to fix this
+  // purely through camera framing, which turned out to be a dead end for
+  // exactly this reason). Cover-fit means viewW/viewH always exactly equal
+  // the canvas size -- no letterboxing -- and matches Google Maps' own
+  // default view, verified directly: at Google's real max zoom-out, the
+  // "Zoom out" button is disabled well before the whole clipped world
+  // would be visible; it fills the window's width and crops latitude
+  // (reaching the poles needs scrolling/zooming), not the other way
+  // around.
   function applyViewFit(sw: number, sh: number) {
-    const scale = Math.min(sw / WORLD_WIDTH, sh / WORLD_HEIGHT);
+    const scale = Math.max(sw / WORLD_WIDTH, sh / WORLD_HEIGHT);
     baseScaleX = scale;
     baseScaleY = scale;
-    viewW = WORLD_WIDTH * scale;
-    viewH = WORLD_HEIGHT * scale;
-    letterboxX = (sw - viewW) / 2;
-    letterboxY = (sh - viewH) / 2;
+    viewW = sw;
+    viewH = sh;
+    letterboxX = 0;
+    letterboxY = 0;
   }
   applyViewFit(screenWidth, screenHeight);
 

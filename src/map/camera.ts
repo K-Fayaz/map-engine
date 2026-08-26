@@ -24,9 +24,22 @@ export const MIN_ZOOM = 1;
 
 // Clamps zoom to [MIN_ZOOM, maxZoom] and position so the world always covers
 // the screen (no panning past its own edges -- no wraparound, no empty
-// space beyond it). At zoom = 1 the content exactly matches the screen size,
-// so x/y are forced to (0, 0) -- can't pan at all until zoomed in, which is
-// the intended camera bound.
+// space beyond it).
+//
+// contentBase (not screenWidth/screenHeight independently) is the world's
+// actual rendered pixel size at zoom = 1: worldRenderer.ts's applyViewFit
+// cover-fits the world (always square -- WORLD_WIDTH === WORLD_HEIGHT, a
+// requirement for undistorted Web Mercator) to the viewport by picking the
+// LARGER of the two per-axis fit scales, so the true content size at zoom=1
+// is Math.max(screenWidth, screenHeight) on *both* axes, not screenWidth/
+// screenHeight separately -- whichever axis is smaller has real content
+// extending past the visible edge (that's the whole point of cover-fit:
+// nothing is ever letterboxed), and that excess needs to stay pannable
+// rather than clamped away. Using screenWidth/screenHeight directly here
+// (as if content exactly matched the viewport on both axes) was correct
+// under the old contain-fit, but silently forced x/y to (0,0) at zoom=1
+// even on the cropped axis once cover-fit shipped -- confirmed as a real
+// regression (dragging did nothing at the default zoom) before this fix.
 export function clampCamera(
   camera: Camera,
   screenWidth: number,
@@ -35,8 +48,9 @@ export function clampCamera(
 ): Camera {
   const zoom = Math.min(maxZoom, Math.max(MIN_ZOOM, camera.zoom));
 
-  const contentWidth = screenWidth * zoom;
-  const contentHeight = screenHeight * zoom;
+  const contentBase = Math.max(screenWidth, screenHeight);
+  const contentWidth = contentBase * zoom;
+  const contentHeight = contentBase * zoom;
 
   const x = Math.min(0, Math.max(screenWidth - contentWidth, camera.x));
   const y = Math.min(0, Math.max(screenHeight - contentHeight, camera.y));

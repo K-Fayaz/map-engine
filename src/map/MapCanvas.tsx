@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { Application } from "pixi.js";
-import { project, unproject } from "./render";
+import { project, unproject, worldViewCamera } from "./render";
 import { computeFramingBounds, findEntityAt, type Entity } from "./entities";
 import {
   type Camera,
@@ -107,7 +107,7 @@ export function MapCanvas() {
 
         // Camera state: current is what's actually rendered each frame,
         // eased toward target by the ticker.
-        let current: Camera = { x: 0, y: 0, zoom: 1 };
+        let current: Camera = worldViewCamera(scene.viewW, scene.viewH, scene.baseScaleX, scene.baseScaleY, MAX_ZOOM);
         let target: Camera = { ...current };
 
         // A scripted (Phase 6 scene) pan in progress, or null when none is
@@ -400,11 +400,11 @@ export function MapCanvas() {
         unsubscribeFocus = interactionStore.onFocusRequest((id, options) => {
           const { durationSeconds, fromWorldView, zoomPercent } = options ?? {};
           const zoomMultiplier = (zoomPercent ?? 100) / 100;
-          // null = "focus the whole world" -- zoom = MIN_ZOOM, x/y = 0
-          // already *is* the definition of the default world view.
+          // null = "focus the whole world" -- worldViewCamera (render.ts) is
+          // the shared definition of the default world view.
           let newTarget: Camera;
           if (id === null) {
-            newTarget = clampCamera({ x: 0, y: 0, zoom: MIN_ZOOM * zoomMultiplier }, scene.viewW, scene.viewH, MAX_ZOOM);
+            newTarget = worldViewCamera(scene.viewW, scene.viewH, scene.baseScaleX, scene.baseScaleY, MAX_ZOOM, zoomMultiplier);
           } else {
             const entity = scene.findById(id);
             if (!entity) return;
@@ -432,7 +432,7 @@ export function MapCanvas() {
           // (no duration given): fast interactive ease, only sets `target`.
           if (durationSeconds !== undefined) {
             const from = fromWorldView
-              ? clampCamera({ x: 0, y: 0, zoom: MIN_ZOOM }, scene.viewW, scene.viewH, MAX_ZOOM)
+              ? worldViewCamera(scene.viewW, scene.viewH, scene.baseScaleX, scene.baseScaleY, MAX_ZOOM)
               : current;
             scriptedPan = { from, to: newTarget, startTime: performance.now(), durationMs: durationSeconds * 1000 };
           } else {

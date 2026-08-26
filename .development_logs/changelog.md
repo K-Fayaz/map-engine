@@ -5,6 +5,186 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-25 — Equirectangular to Web Mercator, and getting the default view right
+
+### Summary
+User asked to make the map's *scale* look more like Google Maps -- high-
+latitude landmasses (Greenland, the Arctic islands, Antarctica) read as
+tiny dots on the existing map compared to Google's view, even though the
+user understood the map is squeezed into one fixed view rather than
+pannable. Diagnosed together: the app's `project()` (`render.ts`) was
+plain equirectangular (Plate Carrée) -- linear lon/lat -> x/y, so 1° of
+longitude is the same pixel width at every latitude. Google Maps uses Web
+Mercator, which stretches both axes increasingly toward the poles (the
+same effect behind "Mercator makes Greenland look as big as Africa").
+Switching projection was the actual fix; getting the *default view* right
+around that switch took three more rounds after the projection itself
+landed, each caught by the user actually running the app.
+
+**Round 1 -- the projection swap itself.** `project()`/`unproject()`
+rewritten to real spherical Web Mercator, with the standard ±85.0511°
+latitude clip (Google/OSM/Mapbox's own convention -- true Mercator sends
+the poles to infinity). `WORLD_HEIGHT` changed from `1000` (the old 2:1
+ratio matching equirect's natural 360:180 range) to `2000`, square,
+matching Mercator's own conformal base aspect -- confirmed via the
+existing Vitest suite (`timelineResolver.test.ts`), which calls the real
+`project()`/`focusOnBounds` to build its own expected values rather than
+hardcoding numbers, so it kept passing unmodified as a live regression
+check through every round below.
+
+**Round 2 -- Antarctica ballooned the default view, first attempt failed.**
+Once Mercator was in, Antarctica's real ~-63°..-85° span visually
+dominated the whole default view (Mercator's scale grows as
+~1/cos(latitude)). First attempt: a `focusOnBounds`-derived
+`worldViewCamera` targeting a tighter ±75° default latitude band. Verified
+directly in the running app that this had **zero effect** -- `WORLD_WIDTH
+=== WORLD_HEIGHT` (required for undistorted Mercator) meant
+`applyViewFit`'s contain-fit always pinned the width-fit zoom at exactly
+`1` regardless of the latitude band chosen, since the bounds always kept
+the full 360° of longitude; tightening latitude only ever increased the
+*height*-fit zoom, which `focusOnBounds`'s `min()` never picks. No
+latitude value could have fixed it -- confirmed by re-deriving the
+`focusOnBounds` math, not just re-guessing a different number.
+
+**Round 3 -- cover-fit, verified against real Google Maps.** Checked
+Google's own actual behavior via chrome-devtools rather than assuming:
+at Google's maximum zoom-out, the "Zoom out" button is already disabled
+-- they never offer a view showing pole-to-pole at once; the map fills
+the window's width completely and crops latitude, panning reveals the
+rest. Reworked `applyViewFit` (`worldRenderer.ts`) from "contain"
+(`Math.min`, pad the shorter axis with letterbox/pillarbox) to "cover"
+(`Math.max`, crop the shorter axis, fill the canvas completely) -- the
+same `background-size: cover` pattern every real map library uses for its
+base layer. `viewW`/`viewH` become exactly the canvas size;
+`letterboxX`/`letterboxY` become permanently `0` (verified both only ever
+consumed as additive offsets in two places, both harmless no-ops at
+zero). This also made Round 2's `worldViewCamera` machinery provably
+pointless (re-derived: keeping full longitude width still pins the
+width-fit zoom at exactly 1 either way) -- reverted back to a simple
+shared `{x:0, y:0, zoom:MIN_ZOOM}` helper, still fixing the original
+"four independently-duplicated literals" across `MapCanvas.tsx`/
+`timelineResolver.ts`, just without the dead-end bounds projection.
+
+**Round 4 -- cover-fit broke panning at the default zoom.** User caught
+this immediately after Round 3 shipped: dragging did nothing at the
+default view. Root cause: `camera.ts`'s `clampCamera` hard-locks `x`/`y`
+to `(0,0)` whenever `zoom === MIN_ZOOM`, built on the old contain-fit
+invariant "content exactly matches the screen at zoom 1" -- no longer true
+under cover-fit, where content can legitimately exceed the viewport on
+the cropped axis even at the zoom floor. Confirmed the fix target by
+dragging real Google Maps at its own max zoom-out (synthetic pointerdown/
+move/up events) -- it panned freely and revealed Antarctica, only
+zooming out further was disabled. Fixed with a single internal formula
+change in `clampCamera`: `contentBase = Math.max(screenWidth,
+screenHeight)` (exact, not approximate -- re-derived from
+`applyViewFit`'s own cover-fit math) instead of treating `screenWidth`/
+`screenHeight` as the content size independently per axis. No signature
+change, no call-site updates anywhere -- every caller already passed the
+right viewport dimensions.
+
+**Round 5 -- a second, unrelated Antarctica seam.** Once zoomed in close
+enough to notice (only possible after panning worked again), a thin
+diagonal line was visible cutting across Antarctica's coastline near
+±180° longitude -- different from the earlier-fixed horizontal
+polar-closure-ring line. First hypothesis (multiple back-and-forth
+antimeridian crossings producing an orphaned middle piece in
+`splitAtAntimeridian`) was disproven by running the real function against
+the real vendored data (both `land`/`countries` datasets, both `50m`/
+`10m`) via a throwaway script: Antarctica's ring crosses the antimeridian
+exactly once everywhere, and the existing split+merge logic reconstructs
+it correctly. The real cause: that single merged piece's own closing edge
+*is* the true, correct coastline connection (Antarctica sweeps the pole,
+touching the dateline once) -- but on a flat, non-wrapping projection, a
+real ~0.4° connection projects to a chord spanning ~1998 of the map's
+2000-unit width. Measured concretely via the same script: closing edge
+runs `(179.622°,-84.268°)` (x≈1997.9) to `(-180°,-84.352°)` (x≈0).
+
+New `closePolarWrap()` (`render.ts`) routes that closing edge along the
+map's own bottom border instead -- out to the nearest edge, down to the
+pole (`project()`'s own clamp naturally pulls this to the real render
+boundary), across, then the existing auto-close finishes it -- instead of
+a diagonal chord through the middle. Gated on "every point of this piece
+sits past ±60° latitude" so Russia/Fiji/the USA's own (much smaller,
+already-accepted) antimeridian imprecision is never touched. Deliberately
+applied only inside `fillGeometry`/`strokeGeometry`, not folded into
+`splitAtAntimeridian` itself, since that function is also used by
+`entities.ts` for `computeArea`/point-in-polygon hit-testing, where the
+extra boundary points would wrongly inflate Antarctica's computed area
+and hit-test region. Verified with the same throwaway-script approach:
+confirmed the ~1998-wide chord is gone (replaced by a bottom-border-
+hugging edge sitting at `y = WORLD_HEIGHT` exactly), and confirmed
+Russia/Fiji never trigger the new path at all.
+
+**Final verification pass**, once the user confirmed the default view
+looked right: checked every remaining item from an honest "what have I
+NOT actually verified" list via chrome-devtools against the real running
+app (not just reasoning) -- hit-testing (clicked Canada, highlighted
+correctly), a scripted Pan-to-Japan flight (Van Wijk & Nuij tween landed
+correctly), the 9:16 export ratio (fills edge-to-edge, no letterbox), and
+the 10m LOD swap + state borders at high zoom (both render correctly).
+No console errors through any of it.
+
+### Changes
+
+**`src/map/render.ts`**
+- `WORLD_HEIGHT`: `1000` -> `2000`. New `MAX_MERCATOR_LAT = 85.0511287798`.
+- `project()`/`unproject()`: linear equirect formulas replaced with real
+  spherical Web Mercator (clamped latitude in, Gudermannian-based inverse
+  out).
+- New `worldViewCamera()` -- shared `{x:0, y:0, zoom:MIN_ZOOM}` helper
+  (after the Round 2 `focusOnBounds`/`WORLD_VIEW_BOUNDS` attempt was
+  reverted as pointless), replacing four independently-hardcoded literals
+  across `MapCanvas.tsx`/`timelineResolver.ts`.
+- New `closePolarWrap()`, applied inside `fillGeometry`/`strokeGeometry`
+  only (not `splitAtAntimeridian` itself) -- routes a confirmed-polar
+  piece's antimeridian closing edge along the map's bottom border instead
+  of a direct diagonal chord.
+
+**`src/map/worldRenderer.ts`**
+- `applyViewFit`: contain-fit (`Math.min`, letterbox) -> cover-fit
+  (`Math.max`, fills canvas exactly, crops instead of padding).
+
+**`src/map/camera.ts`**
+- `clampCamera`: `contentBase = Math.max(screenWidth, screenHeight)` used
+  for both axes' content size, instead of `screenWidth`/`screenHeight`
+  independently -- fixes panning being locked at `zoom === MIN_ZOOM` under
+  cover-fit.
+
+**`src/map/MapCanvas.tsx` / `src/map/timelineResolver.ts`**
+- Four `{x:0, y:0, zoom:MIN_ZOOM...}` call sites (initial camera, "Pan to
+  World", "Start from world view" glide-start, export/resolver fallback)
+  switched to the shared `worldViewCamera()`.
+
+### Decisions
+- **Cover-fit, not contain-fit, for the world viewport** -- confirmed
+  against real Google Maps behavior via devtools rather than assumed;
+  matches every other web map library's convention for its base layer.
+- **`closePolarWrap` lives in the rendering functions only, not
+  `splitAtAntimeridian`** -- that function has other consumers
+  (`entities.ts`'s area calc and hit-testing) that would be actively
+  broken by the extra boundary points, even though the rendering fix is
+  correct for the visual case.
+- **Ordinary (non-polar) antimeridian crossings deliberately left
+  untouched.** Russia/Fiji/the USA's own seam imprecision is real but
+  small and already documented as an accepted trade-off (from an earlier
+  session) -- the polar-specific fix here is gated (±60° latitude check)
+  to never touch them.
+- **Every round verified against the real running app or real Google
+  Maps, not reasoned through in the abstract** -- Round 2's dead end was
+  caught by direct inspection before it was presented as done; Round 4
+  and Round 5's fixes were each confirmed against actual Google Maps
+  devtools behavior first, then verified against the app's own real data
+  via throwaway scripts, not just code review.
+
+### Deferred / not yet implemented
+- A real file export (actual Tauri shell) still hasn't been run this
+  session -- same recurring sandbox limitation as every prior export/map
+  entry. The export code path was confirmed identical to the live
+  rendering path that was verified, but the actual sidecar/ffmpeg
+  round-trip is untested here.
+
+---
+
 ## 2026-08-25 — Bug fix: stray filled line below Antarctica
 
 ### Summary
