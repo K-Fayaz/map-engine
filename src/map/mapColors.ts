@@ -31,3 +31,19 @@ function hashString(id: string): number {
 export function colorForCountry(id: string): number {
   return landPalette[hashString(id) % landPalette.length];
 }
+
+// Fallback color for scene highlights that don't specify their own (old
+// scenes saved before per-scene color existed, or manual map clicks outside
+// scene playback). Same value the highlight overlay always used before it
+// became customizable.
+export const defaultSelectionColor: number = 0xffa000;
+
+// Conversions between Pixi's packed-number hex (0xrrggbb) and the
+// "#rrggbb" string an <input type="color"> speaks.
+export function numberToHex(n: number): string {
+  return `#${n.toString(16).padStart(6, "0")}`;
+}
+
+export function hexToNumber(hex: string): number {
+  return parseInt(hex.slice(1), 16);
+}

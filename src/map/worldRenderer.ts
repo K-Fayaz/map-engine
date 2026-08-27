@@ -26,7 +26,7 @@ import {
   WORLD_HEIGHT,
 } from "./render";
 import type { Camera } from "./camera";
-import { colorForCountry, oceanColor } from "./mapColors";
+import { colorForCountry, oceanColor, defaultSelectionColor } from "./mapColors";
 
 // The scene-graph construction, highlight drawing, and camera-application
 // pieces of what used to be one large closure inside MapCanvas.tsx's mount
@@ -62,8 +62,11 @@ const LAKE_COLOR = OCEAN_COLOR;
 const LAKE_BORDER_COLOR = 0x04697b;
 const RIVER_COLOR = LAKE_BORDER_COLOR;
 const HOVER_COLOR = 0xffd54a;
-const SELECTION_COLOR = 0xffa000;
-const SELECTION_FILL_ALPHA = 0.3;
+// Fully opaque -- a picked highlight color must render as exactly that
+// color, not blended with the country's own base political-map fill
+// underneath (a partial alpha here made a dark pick look like the base
+// color leaking through instead of the color the user chose).
+const SELECTION_FILL_ALPHA = 1;
 
 // How far past the default view (world exactly fills the screen) the camera
 // can zoom in -- shared ceiling for manual wheel-zoom/drag *and* scripted
@@ -135,7 +138,11 @@ export interface WorldScene {
   resolution: Resolution;
 
   findById(id: string | null): Entity | undefined;
-  drawHighlights(selectedEntityIds: ReadonlySet<string>, hoveredEntityId: string | null): void;
+  drawHighlights(
+    selectedEntityIds: ReadonlySet<string>,
+    hoveredEntityId: string | null,
+    selectionColor?: number,
+  ): void;
   applyCamera(camera: Camera, showStateBorders: boolean): void;
   applyViewFit(screenWidth: number, screenHeight: number): void;
   // `chunked` spreads the ~241 separate Graphics.fill() calls across several
@@ -362,7 +369,11 @@ export function buildWorldScene(screenWidth: number, screenHeight: number): Worl
   highlightLayer.addChild(selectionGraphic);
   worldContainer.addChild(highlightLayer);
 
-  function drawHighlights(selectedEntityIds: ReadonlySet<string>, hoveredEntityId: string | null) {
+  function drawHighlights(
+    selectedEntityIds: ReadonlySet<string>,
+    hoveredEntityId: string | null,
+    selectionColor: number = defaultSelectionColor,
+  ) {
     // One shared Graphics accumulates every selected entity's shape, same
     // "many shapes, one Graphics object" approach `land` uses.
     selectionGraphic.clear();
@@ -371,12 +382,12 @@ export function buildWorldScene(screenWidth: number, screenHeight: number): Worl
       if (!selected) continue;
       // Rivers are the one selectable entity with no interior.
       if (selected.geometry.type === "LineString" || selected.geometry.type === "MultiLineString") {
-        strokeLine(selectionGraphic, selected.geometry, SELECTION_COLOR);
+        strokeLine(selectionGraphic, selected.geometry, selectionColor);
         continue;
       }
       const geometry = selected.geometry as AreaGeometry;
-      fillGeometry(selectionGraphic, geometry, SELECTION_COLOR, SELECTION_FILL_ALPHA);
-      strokeGeometry(selectionGraphic, geometry, SELECTION_COLOR);
+      fillGeometry(selectionGraphic, geometry, selectionColor, SELECTION_FILL_ALPHA);
+      strokeGeometry(selectionGraphic, geometry, selectionColor);
     }
 
     hoverGraphic.clear();

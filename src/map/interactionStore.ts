@@ -17,6 +17,10 @@ interface InteractionState {
   // toggleEntity below for how membership changes; drawHighlights in
   // MapCanvas.tsx renders every id in here, not just one.
   selectedEntityIds: Set<string>;
+  // Custom color for the current selection, set only when a scene's
+  // Highlight action provides one (via toggleEntity's `color` param). `null`
+  // means "use the renderer's default" -- manual map clicks never set this.
+  selectedColor: number | null;
   hoveredEntityId: string | null;
   // Manual override for state (sub-country) border visibility, set from the
   // Instruction Builder. `true` (default) leaves today's behavior alone --
@@ -57,6 +61,7 @@ function createInteractionStore() {
   let state: InteractionState = {
     entities: [],
     selectedEntityIds: new Set(),
+    selectedColor: null,
     hoveredEntityId: null,
     showStateBorders: true,
   };
@@ -95,17 +100,28 @@ function createInteractionStore() {
     // (ctrl+clicking empty space shouldn't discard a multi-selection) --
     // callers (MapCanvas.tsx's onPointerUp) shouldn't even call this in that
     // case, but it's a safe no-op here too if they do.
-    toggleEntity(id: string | null, additive: boolean) {
+    // `color`, only meaningful alongside a non-additive single-entity
+    // replace, is the Phase 6 scene highlight's custom color
+    // (actionRegistry.ts's "highlight" handler). Every other path (clearing,
+    // additive multi-select) resets `selectedColor` to `null` -- manual map
+    // clicks have no custom-color concept and should fall back to the
+    // renderer's default.
+    toggleEntity(id: string | null, additive: boolean, color?: number) {
       if (id === null) {
         if (additive || state.selectedEntityIds.size === 0) return;
-        state = { ...state, selectedEntityIds: new Set() };
+        state = { ...state, selectedEntityIds: new Set(), selectedColor: null };
         emit();
         return;
       }
 
       if (!additive) {
-        if (state.selectedEntityIds.size === 1 && state.selectedEntityIds.has(id)) return;
-        state = { ...state, selectedEntityIds: new Set([id]) };
+        if (
+          state.selectedEntityIds.size === 1 &&
+          state.selectedEntityIds.has(id) &&
+          state.selectedColor === (color ?? null)
+        )
+          return;
+        state = { ...state, selectedEntityIds: new Set([id]), selectedColor: color ?? null };
         emit();
         return;
       }
@@ -116,7 +132,7 @@ function createInteractionStore() {
       } else {
         next.add(id);
       }
-      state = { ...state, selectedEntityIds: next };
+      state = { ...state, selectedEntityIds: next, selectedColor: null };
       emit();
     },
     hoverEntity(id: string | null) {

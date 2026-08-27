@@ -186,3 +186,31 @@
   color: #6a6e76;
   cursor: not-allowed;
 }
+
+/* react-colorful renders inline (no modal) -- this just fits it to the
+   panel's width and restyles its saturation/hue handles to match the
+   panel's dark theme instead of the library's default white ring. */
+.ib-color-picker.react-colorful {
+  width: 100%;
+  height: 160px;
+}
+
+.ib-color-picker .react-colorful__saturation {
+  border-radius: 4px 4px 0 0;
+}
+
+.ib-color-picker .react-colorful__hue {
+  height: 14px;
+  border-radius: 0 0 4px 4px;
+}
+
+.ib-color-picker .react-colorful__pointer {
+  width: 16px;
+  height: 16px;
+  border: 2px solid #e6e6e6;
+}
+
+.ib-color-hex-input {
+  margin-top: 8px;
+  text-transform: uppercase;
+}

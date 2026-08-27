@@ -129,7 +129,8 @@ registerAction("pan", (params, durationSeconds, cameraStart) => {
 // (the playback engine's hold), not something this handler animates.
 registerAction("highlight", (params, _durationSeconds, _cameraStart) => {
   const entityId = params.entityId as string;
-  interactionStore.toggleEntity(entityId, false);
+  const color = params.color as number | undefined;
+  interactionStore.toggleEntity(entityId, false, color);
 });
 
 // "clearHighlight": clears the whole selection rather than removing only

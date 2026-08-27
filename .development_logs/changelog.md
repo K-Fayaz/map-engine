@@ -5,6 +5,145 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-27 — Per-scene custom highlight color
+
+### Summary
+User wanted each scene's Highlight animation to carry its own color, picked
+from a color picker in the Instruction Builder, instead of the fixed global
+orange the map has always used -- resolving the open hover/selection color
+question left in the 2026-08-26 entry below. Discussed and confirmed
+per-scene (not a single global setting) before implementation, then planned
+via `EnterPlanMode`: thread a `color` value through the existing
+scene-authoring pipeline the same way `zoomPercent` already flows --
+`buildScene` -> the `highlight` action's `params` -> `actionRegistry`'s
+dispatcher -> `interactionStore` -> `worldRenderer.drawHighlights`.
+
+First implementation used the native `<input type="color">`. The user
+rejected it on sight (screenshot showed the OS's own modal picker opening --
+"I hate modal... I expected it to be more like an inline color picker").
+Replaced with `react-colorful`'s `HexColorPicker`/`HexColorInput`, rendered
+inline in the panel -- confirmed via `AskUserQuestion` that adding this
+small (~2.8kb, zero-dep) library was preferred over hand-building a
+saturation/hue picker from scratch.
+
+Two more bugs surfaced only once the user actually used the finished
+feature, both fixed in this same session:
+
+- **Highlight fill didn't look like the picked color.** The selection fill
+  was drawn at 30% alpha over the country's own base political-map color
+  (from the Aug 26 session's per-country palette), so a dark/low-brightness
+  pick barely shifted the base color underneath and rendered as something
+  else entirely (a picked near-black navy blue over India's own khaki base
+  came out looking olive-brown). Confirmed the cause was alpha blending, not
+  a logic bug, then confirmed via `AskUserQuestion` that the fix should be
+  full opacity (not just a higher alpha) -- `SELECTION_FILL_ALPHA` `0.3` ->
+  `1`, so the rendered fill always matches the picked color exactly,
+  independent of whatever country color sits underneath.
+- **Exported video ignored the custom color, always rendering the old
+  default orange.** Root cause: video export (`exportPipeline.ts`) never
+  goes through the live app's `interactionStore`/`actionRegistry` dispatch
+  path at all -- it's a fully separate, deterministic "what should frame t
+  look like" resolver (`timelineResolver.ts`'s `resolveAt`) that recomputes
+  state directly from `Scene[]` data for a second, independent offscreen
+  Pixi renderer, so it never saw the color the live preview/playback used.
+  That resolver's `ResolvedState` only ever carried `highlightedEntityId`,
+  no color field, so `drawHighlights` was called with just 2 args and
+  silently fell back to the default. Investigated read-only first (spawned
+  an Explore agent to trace the export pipeline) before touching any code.
+  Fixed by threading `highlightColor` through `ResolvedState`/
+  `PerSceneState` the same way `highlightedEntityId` already was, read from
+  the same `highlight` action's `params.color`. User confirmed fixed by
+  actually running a real export.
+
+### Changes
+
+**New dependency**: `react-colorful` (package.json/package-lock.json).
+
+**New `src/map/mapColors.ts` additions**
+- `defaultSelectionColor` -- moved out of `worldRenderer.ts`'s private
+  `SELECTION_COLOR` constant, the fallback used wherever no custom color is
+  set (old scenes, manual map clicks), keeping with this file's existing
+  "colors live here, not hardcoded" role from the Aug 26 session.
+- `numberToHex`/`hexToNumber` -- conversions between Pixi's packed-number
+  hex and the `"#rrggbb"` strings the color picker speaks.
+
+**`src/map/worldRenderer.ts`**
+- `drawHighlights` takes an optional third `selectionColor` param (default
+  `defaultSelectionColor`), used for the selection fill/stroke instead of
+  the old fixed constant. Hover color (`HOVER_COLOR`) is untouched -- only
+  scene-authored highlights are customizable; hover stays fixed, transient
+  interactive feedback, not something a scene authors.
+- `SELECTION_FILL_ALPHA`: `0.3` -> `1` (see bug above).
+
+**`src/map/interactionStore.ts`**
+- `selectedColor: number | null` added to state; `toggleEntity` gains an
+  optional `color` param, set only on the non-additive single-replace path
+  (the one `actionRegistry`'s highlight handler uses). Every other path
+  (clearing, additive multi-select) resets it to `null` -- manual map clicks
+  have no custom-color concept and fall back to the default.
+
+**`src/map/scenes.ts`**
+- `buildScene` accepts a `color` param, stored in the `highlight` action's
+  `params.color`.
+- New `sceneHighlightColor(scene)` reader, mirroring the existing
+  `sceneZoomPercent` pattern, for the Instruction Builder's edit-in-place
+  repopulation.
+
+**`src/map/actionRegistry.ts`**
+- `"highlight"` handler reads `params.color` and passes it through to
+  `interactionStore.toggleEntity`.
+
+**`src/map/timelineResolver.ts`**
+- `ResolvedState`/`PerSceneState` gain `highlightColor: number | null`,
+  extracted from the same `highlight`/`clearHighlight` action loop that
+  already tracks `highlightedEntityId` -- export's independent resolver now
+  knows about per-scene color too.
+
+**`src/map/exportPipeline.ts`**
+- The `drawHighlights` call now passes `resolved.highlightColor ??
+  defaultSelectionColor` as its third argument, instead of an implicit
+  2-arg call that always fell back to the default.
+
+**`src/map/InstructionBuilder.tsx`**
+- New "Highlight Color" field -- `HexColorPicker` + `HexColorInput`, both
+  inline (no modal), shown only when `animation === "highlight"`.
+- Live preview: picking a color while an entity is already selected updates
+  that entity's highlight on the map immediately (`changeHighlightColor`),
+  same "instant feedback" principle as the existing entity-pick preview.
+- Edit-in-place (`editingSceneId` effect) and `cancelEdit` both handle the
+  new field the same way they already handle `zoomPercent`.
+
+**`src/map/InstructionBuilder.css`**
+- Restyled `react-colorful`'s saturation/hue handles to fit the panel's dark
+  theme and full width.
+
+### Decisions
+- **Per-scene color, not a single global setting.** Confirmed with the user
+  up front -- matches "choose color from the input area when picking
+  Highlight animation," and different Highlight scenes can now look
+  different from each other.
+- **`react-colorful` over a hand-built picker.** Confirmed via
+  `AskUserQuestion` -- small, zero-dep, well-tested, matches the inline
+  saturation/hue UI the user actually wanted (shown via screenshot) better
+  than a from-scratch build would justify for this feature's scope.
+- **Selection fill made fully opaque, not just less transparent.** Confirmed
+  via `AskUserQuestion` (opaque vs. a higher-but-still-blended alpha) --
+  "what you pick is exactly what you see" was the priority once the
+  blending bug surfaced from real use.
+- **Export bug diagnosed by tracing the actual rendering path (an Explore
+  agent), not guessed.** Confirmed export uses a completely independent
+  resolver/renderer before writing any fix, the same "investigate before
+  fixing" pattern as the Aug 26 session's Australia/Caspian bugs.
+
+### Deferred / not yet implemented
+- Hover color remains the fixed, non-customizable `HOVER_COLOR` -- out of
+  scope, hover was never part of this ask. The pre-existing "hover/selection
+  color scheme" question from 2026-08-26 is resolved for the *selection*
+  side (now custom, opaque, per-scene); hover's own treatment was left
+  untouched.
+
+---
+
 ## 2026-08-26 — Bug fix: scene duration label overflow on resize
 
 ### Summary

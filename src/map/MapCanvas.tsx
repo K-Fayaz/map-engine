@@ -15,6 +15,7 @@ import {
 } from "./camera";
 import { interactionStore } from "./interactionStore";
 import { buildWorldScene, MAX_ZOOM, STATE_ZOOM_THRESHOLD, OCEAN_COLOR } from "./worldRenderer";
+import { defaultSelectionColor } from "./mapColors";
 import { placeLabelsWithoutOverlap, type LabelCandidate } from "./labelLayout";
 
 // Fraction of the current->target gap closed per tick (~60fps), giving the
@@ -389,10 +390,14 @@ export function MapCanvas() {
         // selected/hovered entity changes -- from pointer events here, or
         // from the Instruction Builder selecting an entity by name.
         unsubscribeInteraction = interactionStore.subscribe(() => {
-          const { selectedEntityIds, hoveredEntityId } = interactionStore.getState();
-          scene.drawHighlights(selectedEntityIds, hoveredEntityId);
+          const { selectedEntityIds, hoveredEntityId, selectedColor } = interactionStore.getState();
+          scene.drawHighlights(selectedEntityIds, hoveredEntityId, selectedColor ?? defaultSelectionColor);
         });
-        scene.drawHighlights(interactionStore.getState().selectedEntityIds, interactionStore.getState().hoveredEntityId);
+        scene.drawHighlights(
+          interactionStore.getState().selectedEntityIds,
+          interactionStore.getState().hoveredEntityId,
+          interactionStore.getState().selectedColor ?? defaultSelectionColor,
+        );
 
         // Fly the camera to fit whatever entity the Instruction Builder
         // (fast interactive fly-to) or Phase 6 scene playback (scripted,

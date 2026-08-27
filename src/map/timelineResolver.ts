@@ -26,6 +26,10 @@ import type { Scene } from "./scenes";
 export interface ResolvedState {
   camera: Camera;
   highlightedEntityId: string | null;
+  // null means "use the renderer's default" -- same convention as
+  // interactionStore.ts's selectedColor, mirrored here since export never
+  // touches that store (see the file header).
+  highlightColor: number | null;
 }
 
 // Sum of every scene's duration -- the export loop's `totalFrames = ceil(
@@ -95,6 +99,7 @@ interface PerSceneState {
   from: Camera;
   to: Camera;
   highlightedEntityId: string | null;
+  highlightColor: number | null;
 }
 
 // One O(scenes) pass building each scene's start/end camera and the
@@ -118,6 +123,7 @@ function buildPerSceneTable(
   // reset (registerReset/resetToBaseline's unconditional toggleEntity(null))
   // always applies before scene 0 -- no resume-from-pause ambiguity here.
   let currentHighlight: string | null = null;
+  let currentHighlightColor: number | null = null;
 
   for (const scene of scenes) {
     const resolvedTarget = resolveSceneTargetCamera(
@@ -149,8 +155,10 @@ function buildPerSceneTable(
     for (const action of scene.actions) {
       if (action.type === "highlight" && typeof action.params.entityId === "string") {
         currentHighlight = action.params.entityId;
+        currentHighlightColor = typeof action.params.color === "number" ? action.params.color : null;
       } else if (action.type === "clearHighlight") {
         currentHighlight = null;
+        currentHighlightColor = null;
       }
     }
 
@@ -160,6 +168,7 @@ function buildPerSceneTable(
       from,
       to,
       highlightedEntityId: currentHighlight,
+      highlightColor: currentHighlightColor,
     });
 
     previousCamera = to;
@@ -190,6 +199,7 @@ export function resolveAt(
     return {
       camera: worldViewCamera(screenWidth, screenHeight, baseScaleX, baseScaleY, maxZoom),
       highlightedEntityId: null,
+      highlightColor: null,
     };
   }
 
@@ -230,5 +240,5 @@ export function resolveAt(
     baseScaleY,
   );
 
-  return { camera, highlightedEntityId: scene.highlightedEntityId };
+  return { camera, highlightedEntityId: scene.highlightedEntityId, highlightColor: scene.highlightColor };
 }

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { HexColorPicker, HexColorInput } from "react-colorful";
 import "./InstructionBuilder.css";
 import { interactionStore, useInteractionStore } from "./interactionStore";
 import type { Entity } from "./entities";
@@ -7,11 +8,13 @@ import {
   animationRequiresEntity,
   buildScene,
   sceneAnimationValue,
+  sceneHighlightColor,
   sceneZoomPercent,
   type AnimationValue,
 } from "./scenes";
 import { useSceneStore } from "./sceneStore";
 import { EXPORT_PROFILES, useExportStore } from "./exportStore";
+import { defaultSelectionColor, hexToNumber, numberToHex } from "./mapColors";
 
 // Right-panel Instruction Builder (roadmap.md Phase 6, section 3). This
 // entity picker deliberately does NOT require clicking the map -- per
@@ -41,6 +44,9 @@ export function InstructionBuilder() {
   // field existed). Tightness multiplier on top of the auto-fit, not an
   // absolute zoom -- see camera.ts's focusOnBounds zoomMultiplier.
   const [zoomPercent, setZoomPercent] = useState(100);
+  // Pixi packed-number hex, only meaningful while animation === "highlight".
+  // Becomes part of the Scene's highlight action -- see buildScene.
+  const [highlightColor, setHighlightColor] = useState(defaultSelectionColor);
 
   // 6.3: clicking a scene block in Timeline.tsx sets editingSceneId, which
   // this form re-populates from -- only depends on editingSceneId itself
@@ -55,6 +61,7 @@ export function InstructionBuilder() {
     setAnimation(sceneAnimationValue(scene));
     setDuration(scene.duration);
     setZoomPercent(sceneZoomPercent(scene));
+    setHighlightColor(sceneHighlightColor(scene));
     setSelectedEntity(
       scene.targetEntityId ? (entities.find((e) => e.id === scene.targetEntityId) ?? null) : null,
     );
@@ -81,7 +88,7 @@ export function InstructionBuilder() {
   // fully resets/exits edit mode afterward rather than carrying anything
   // over -- editing is a one-off correction, not a repeated pattern.
   const submit = () => {
-    const scene = buildScene(selectedEntity, animation, duration, zoomPercent);
+    const scene = buildScene(selectedEntity, animation, duration, zoomPercent, highlightColor);
     if (!scene) return;
     if (editingSceneId) {
       updateScene(editingSceneId, scene);
@@ -100,6 +107,7 @@ export function InstructionBuilder() {
     setAnimation(ANIMATION_OPTIONS[0].value);
     setDuration(3);
     setZoomPercent(100);
+    setHighlightColor(defaultSelectionColor);
   };
 
   // Same substring search interactionStore already exposes -- no new
@@ -132,7 +140,18 @@ export function InstructionBuilder() {
     // handler). Only "highlight" additionally shows the highlight itself.
     interactionStore.requestFocus(entity.id, { zoomPercent });
     if (animation === "highlight") {
-      interactionStore.toggleEntity(entity.id, false);
+      interactionStore.toggleEntity(entity.id, false, highlightColor);
+    }
+  };
+
+  // Live-updates the map preview as the color picker moves, same "instant
+  // feedback" principle as pickEntity above -- only meaningful once an
+  // entity is already highlighted in the preview.
+  const changeHighlightColor = (hex: string) => {
+    const color = hexToNumber(hex);
+    setHighlightColor(color);
+    if (animation === "highlight" && selectedEntity) {
+      interactionStore.toggleEntity(selectedEntity.id, false, color);
     }
   };
 
@@ -259,6 +278,22 @@ export function InstructionBuilder() {
           disabled={isHold}
         />
       </div>
+      {animation === "highlight" && (
+        <div>
+          <span className="ib-field-label">Highlight Color</span>
+          <HexColorPicker
+            className="ib-color-picker"
+            color={numberToHex(highlightColor)}
+            onChange={changeHighlightColor}
+          />
+          <HexColorInput
+            className="ib-input ib-color-hex-input"
+            color={numberToHex(highlightColor)}
+            onChange={changeHighlightColor}
+            prefixed
+          />
+        </div>
+      )}
       <div className="ib-btn-row">
         <button className="ib-add-btn" disabled={!canAdd} onClick={submit}>
           {editingSceneId ? "Update Timeline" : "Add to Timeline"}

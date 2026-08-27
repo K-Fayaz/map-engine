@@ -1,4 +1,5 @@
 import type { Entity } from "./entities";
+import { defaultSelectionColor } from "./mapColors";
 
 // Scene/action data model for Phase 6 (roadmap.md, section 14). Shape
 // matches that section's Scene interface (id, duration, targetEntityId?,
@@ -98,6 +99,7 @@ export function buildScene(
   animation: AnimationValue,
   duration: number,
   zoomPercent: number = 100,
+  color: number = defaultSelectionColor,
 ): Scene | null {
   if (animationRequiresEntity(animation) && !entity) return null;
 
@@ -115,7 +117,7 @@ export function buildScene(
     };
   }
   if (animation === "highlight") {
-    actions.push({ type: "highlight", params: { entityId: entity!.id } });
+    actions.push({ type: "highlight", params: { entityId: entity!.id, color } });
   }
   if (animation === "clearHighlight") {
     actions.push({ type: "clearHighlight", params: { entityId: entity!.id } });
@@ -162,6 +164,16 @@ export function sceneAnimationValue(scene: Scene): AnimationValue {
 export function sceneZoomPercent(scene: Scene): number {
   const value = scene.camera?.params.zoomPercent;
   return typeof value === "number" ? value : 100;
+}
+
+// Reverse of buildScene's color assignment, same pattern as
+// sceneZoomPercent -- for the Instruction Builder's edit-in-place form
+// repopulation. Falls back to defaultSelectionColor for scenes saved before
+// per-scene color existed, or for non-highlight scenes.
+export function sceneHighlightColor(scene: Scene): number {
+  const highlight = scene.actions.find((action) => action.type === "highlight");
+  const value = highlight?.params.color;
+  return typeof value === "number" ? value : defaultSelectionColor;
 }
 
 export function describeAnimation(scene: Scene): string {
