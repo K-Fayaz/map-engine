@@ -30,6 +30,10 @@ export interface ResolvedState {
   // interactionStore.ts's selectedColor, mirrored here since export never
   // touches that store (see the file header).
   highlightColor: number | null;
+  highlightFlagCode: string | null;
+  highlightFillMode: "color" | "image";
+  highlightFlagOffsetX: number;
+  highlightFlagOffsetY: number;
 }
 
 // Sum of every scene's duration -- the export loop's `totalFrames = ceil(
@@ -100,6 +104,10 @@ interface PerSceneState {
   to: Camera;
   highlightedEntityId: string | null;
   highlightColor: number | null;
+  highlightFlagCode: string | null;
+  highlightFillMode: "color" | "image";
+  highlightFlagOffsetX: number;
+  highlightFlagOffsetY: number;
 }
 
 // One O(scenes) pass building each scene's start/end camera and the
@@ -124,6 +132,10 @@ function buildPerSceneTable(
   // always applies before scene 0 -- no resume-from-pause ambiguity here.
   let currentHighlight: string | null = null;
   let currentHighlightColor: number | null = null;
+  let currentHighlightFlagCode: string | null = null;
+  let currentHighlightFillMode: "color" | "image" = "color";
+  let currentHighlightFlagOffsetX = 0;
+  let currentHighlightFlagOffsetY = 0;
 
   for (const scene of scenes) {
     const resolvedTarget = resolveSceneTargetCamera(
@@ -156,9 +168,19 @@ function buildPerSceneTable(
       if (action.type === "highlight" && typeof action.params.entityId === "string") {
         currentHighlight = action.params.entityId;
         currentHighlightColor = typeof action.params.color === "number" ? action.params.color : null;
+        currentHighlightFlagCode = typeof action.params.flagCode === "string" ? action.params.flagCode : null;
+        currentHighlightFillMode = action.params.fillMode === "image" ? "image" : "color";
+        currentHighlightFlagOffsetX =
+          typeof action.params.flagOffsetX === "number" ? action.params.flagOffsetX : 0;
+        currentHighlightFlagOffsetY =
+          typeof action.params.flagOffsetY === "number" ? action.params.flagOffsetY : 0;
       } else if (action.type === "clearHighlight") {
         currentHighlight = null;
         currentHighlightColor = null;
+        currentHighlightFlagCode = null;
+        currentHighlightFillMode = "color";
+        currentHighlightFlagOffsetX = 0;
+        currentHighlightFlagOffsetY = 0;
       }
     }
 
@@ -169,6 +191,10 @@ function buildPerSceneTable(
       to,
       highlightedEntityId: currentHighlight,
       highlightColor: currentHighlightColor,
+      highlightFlagCode: currentHighlightFlagCode,
+      highlightFillMode: currentHighlightFillMode,
+      highlightFlagOffsetX: currentHighlightFlagOffsetX,
+      highlightFlagOffsetY: currentHighlightFlagOffsetY,
     });
 
     previousCamera = to;
@@ -200,6 +226,10 @@ export function resolveAt(
       camera: worldViewCamera(screenWidth, screenHeight, baseScaleX, baseScaleY, maxZoom),
       highlightedEntityId: null,
       highlightColor: null,
+      highlightFlagCode: null,
+      highlightFillMode: "color",
+      highlightFlagOffsetX: 0,
+      highlightFlagOffsetY: 0,
     };
   }
 
@@ -240,5 +270,13 @@ export function resolveAt(
     baseScaleY,
   );
 
-  return { camera, highlightedEntityId: scene.highlightedEntityId, highlightColor: scene.highlightColor };
+  return {
+    camera,
+    highlightedEntityId: scene.highlightedEntityId,
+    highlightColor: scene.highlightColor,
+    highlightFlagCode: scene.highlightFlagCode,
+    highlightFillMode: scene.highlightFillMode,
+    highlightFlagOffsetX: scene.highlightFlagOffsetX,
+    highlightFlagOffsetY: scene.highlightFlagOffsetY,
+  };
 }

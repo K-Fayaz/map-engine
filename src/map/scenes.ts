@@ -100,6 +100,10 @@ export function buildScene(
   duration: number,
   zoomPercent: number = 100,
   color: number = defaultSelectionColor,
+  flagCode: string | null = null,
+  fillMode: "color" | "image" = "color",
+  flagOffsetX: number = 0,
+  flagOffsetY: number = 0,
 ): Scene | null {
   if (animationRequiresEntity(animation) && !entity) return null;
 
@@ -117,7 +121,10 @@ export function buildScene(
     };
   }
   if (animation === "highlight") {
-    actions.push({ type: "highlight", params: { entityId: entity!.id, color } });
+    actions.push({
+      type: "highlight",
+      params: { entityId: entity!.id, color, flagCode, fillMode, flagOffsetX, flagOffsetY },
+    });
   }
   if (animation === "clearHighlight") {
     actions.push({ type: "clearHighlight", params: { entityId: entity!.id } });
@@ -174,6 +181,39 @@ export function sceneHighlightColor(scene: Scene): number {
   const highlight = scene.actions.find((action) => action.type === "highlight");
   const value = highlight?.params.color;
   return typeof value === "number" ? value : defaultSelectionColor;
+}
+
+// Same reverse-mapping pattern as sceneHighlightColor, for the flag-image
+// fill. `null` for scenes saved before this existed, or with no flag ever
+// picked -- the Instruction Builder's flag grid just shows nothing selected.
+export function sceneHighlightFlagCode(scene: Scene): string | null {
+  const highlight = scene.actions.find((action) => action.type === "highlight");
+  const value = highlight?.params.flagCode;
+  return typeof value === "string" ? value : null;
+}
+
+// Which fill is active -- last-edit-wins, persisted explicitly (not
+// inferred), so a re-opened scene renders exactly what was last saved.
+// Falls back to "color" for scenes saved before this existed, matching
+// their only-ever-had-a-color behavior exactly.
+export function sceneHighlightFillMode(scene: Scene): "color" | "image" {
+  const highlight = scene.actions.find((action) => action.type === "highlight");
+  const value = highlight?.params.fillMode;
+  return value === "image" ? "image" : "color";
+}
+
+// Same reverse-mapping pattern, for the flag position sliders. 0
+// (centered/unadjusted) for scenes saved before this existed.
+export function sceneHighlightFlagOffsetX(scene: Scene): number {
+  const highlight = scene.actions.find((action) => action.type === "highlight");
+  const value = highlight?.params.flagOffsetX;
+  return typeof value === "number" ? value : 0;
+}
+
+export function sceneHighlightFlagOffsetY(scene: Scene): number {
+  const highlight = scene.actions.find((action) => action.type === "highlight");
+  const value = highlight?.params.flagOffsetY;
+  return typeof value === "number" ? value : 0;
 }
 
 export function describeAnimation(scene: Scene): string {

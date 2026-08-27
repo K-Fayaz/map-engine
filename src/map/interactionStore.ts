@@ -18,9 +18,19 @@ interface InteractionState {
   // MapCanvas.tsx renders every id in here, not just one.
   selectedEntityIds: Set<string>;
   // Custom color for the current selection, set only when a scene's
-  // Highlight action provides one (via toggleEntity's `color` param). `null`
-  // means "use the renderer's default" -- manual map clicks never set this.
+  // Highlight action provides one (via toggleEntity's `highlight.color`
+  // option). `null` means "use the renderer's default" -- manual map clicks
+  // never set this.
   selectedColor: number | null;
+  // Flag-image fill, alongside `selectedColor` -- both are always kept
+  // up to date regardless of which is currently active; `selectedFillMode`
+  // is the last-edit-wins switch between them (see scenes.ts's `fillMode`).
+  selectedFlagCode: string | null;
+  selectedFillMode: "color" | "image";
+  // Position sliders' values -- fraction of the entity's own bounding box
+  // to pan the flag image within its silhouette. 0 = centered/unadjusted.
+  selectedFlagOffsetX: number;
+  selectedFlagOffsetY: number;
   hoveredEntityId: string | null;
   // Manual override for state (sub-country) border visibility, set from the
   // Instruction Builder. `true` (default) leaves today's behavior alone --
@@ -62,6 +72,10 @@ function createInteractionStore() {
     entities: [],
     selectedEntityIds: new Set(),
     selectedColor: null,
+    selectedFlagCode: null,
+    selectedFillMode: "color",
+    selectedFlagOffsetX: 0,
+    selectedFlagOffsetY: 0,
     hoveredEntityId: null,
     showStateBorders: true,
   };
@@ -100,28 +114,66 @@ function createInteractionStore() {
     // (ctrl+clicking empty space shouldn't discard a multi-selection) --
     // callers (MapCanvas.tsx's onPointerUp) shouldn't even call this in that
     // case, but it's a safe no-op here too if they do.
-    // `color`, only meaningful alongside a non-additive single-entity
-    // replace, is the Phase 6 scene highlight's custom color
-    // (actionRegistry.ts's "highlight" handler). Every other path (clearing,
-    // additive multi-select) resets `selectedColor` to `null` -- manual map
-    // clicks have no custom-color concept and should fall back to the
-    // renderer's default.
-    toggleEntity(id: string | null, additive: boolean, color?: number) {
+    // `highlight`, only meaningful alongside a non-additive single-entity
+    // replace, is the Phase 6 scene highlight's custom fill
+    // (actionRegistry.ts's "highlight" handler) -- color and/or flag image,
+    // plus which one is currently active (`fillMode`, last-edit-wins per
+    // scenes.ts). Bundled into an options object rather than more stacked
+    // positional params, same call already made for FocusOptions above.
+    // Every other path (clearing, additive multi-select) resets all three
+    // to their defaults -- manual map clicks have no custom-fill concept
+    // and should fall back to the renderer's defaults.
+    toggleEntity(
+      id: string | null,
+      additive: boolean,
+      highlight?: {
+        color?: number;
+        flagCode?: string;
+        fillMode?: "color" | "image";
+        flagOffsetX?: number;
+        flagOffsetY?: number;
+      },
+    ) {
       if (id === null) {
         if (additive || state.selectedEntityIds.size === 0) return;
-        state = { ...state, selectedEntityIds: new Set(), selectedColor: null };
+        state = {
+          ...state,
+          selectedEntityIds: new Set(),
+          selectedColor: null,
+          selectedFlagCode: null,
+          selectedFillMode: "color",
+          selectedFlagOffsetX: 0,
+          selectedFlagOffsetY: 0,
+        };
         emit();
         return;
       }
 
       if (!additive) {
+        const color = highlight?.color ?? null;
+        const flagCode = highlight?.flagCode ?? null;
+        const fillMode = highlight?.fillMode ?? "color";
+        const flagOffsetX = highlight?.flagOffsetX ?? 0;
+        const flagOffsetY = highlight?.flagOffsetY ?? 0;
         if (
           state.selectedEntityIds.size === 1 &&
           state.selectedEntityIds.has(id) &&
-          state.selectedColor === (color ?? null)
+          state.selectedColor === color &&
+          state.selectedFlagCode === flagCode &&
+          state.selectedFillMode === fillMode &&
+          state.selectedFlagOffsetX === flagOffsetX &&
+          state.selectedFlagOffsetY === flagOffsetY
         )
           return;
-        state = { ...state, selectedEntityIds: new Set([id]), selectedColor: color ?? null };
+        state = {
+          ...state,
+          selectedEntityIds: new Set([id]),
+          selectedColor: color,
+          selectedFlagCode: flagCode,
+          selectedFillMode: fillMode,
+          selectedFlagOffsetX: flagOffsetX,
+          selectedFlagOffsetY: flagOffsetY,
+        };
         emit();
         return;
       }
@@ -132,7 +184,15 @@ function createInteractionStore() {
       } else {
         next.add(id);
       }
-      state = { ...state, selectedEntityIds: next, selectedColor: null };
+      state = {
+        ...state,
+        selectedEntityIds: next,
+        selectedColor: null,
+        selectedFlagCode: null,
+        selectedFillMode: "color",
+        selectedFlagOffsetX: 0,
+        selectedFlagOffsetY: 0,
+      };
       emit();
     },
     hoverEntity(id: string | null) {

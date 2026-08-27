@@ -15,6 +15,7 @@ import {
 } from "./entities";
 import {
   fillGeometry,
+  fillGeometryTexture,
   strokeGeometry,
   strokeLine,
   project,
@@ -27,6 +28,33 @@ import {
 } from "./render";
 import type { Camera } from "./camera";
 import { colorForCountry, oceanColor, defaultSelectionColor } from "./mapColors";
+import { cachedFlagTexture, loadFlagTexture } from "./flags";
+
+// A scene highlight's fill, as resolved by whichever consumer is calling
+// drawHighlights (MapCanvas.tsx's live path, exportPipeline.ts). `fillMode`
+// is last-edit-wins per-scene state (see scenes.ts) -- "image" only takes
+// effect when `flagCode` is set AND its texture is already cached; an
+// uncached texture (or fillMode "color") falls back to `color`, same as
+// today's plain color highlight.
+export interface HighlightFill {
+  color: number;
+  flagCode: string | null;
+  fillMode: "color" | "image";
+  // Fraction of the entity's own bounding box (e.g. 0.1 = 10% of its
+  // width/height) to pan the flag image within its fixed silhouette --
+  // the Instruction Builder's position sliders. 0 (centered) is the
+  // fill's original, unadjusted position.
+  flagOffsetX: number;
+  flagOffsetY: number;
+}
+
+const DEFAULT_HIGHLIGHT_FILL: HighlightFill = {
+  color: defaultSelectionColor,
+  flagCode: null,
+  fillMode: "color",
+  flagOffsetX: 0,
+  flagOffsetY: 0,
+};
 
 // The scene-graph construction, highlight drawing, and camera-application
 // pieces of what used to be one large closure inside MapCanvas.tsx's mount
@@ -141,7 +169,7 @@ export interface WorldScene {
   drawHighlights(
     selectedEntityIds: ReadonlySet<string>,
     hoveredEntityId: string | null,
-    selectionColor?: number,
+    fill?: HighlightFill,
   ): void;
   applyCamera(camera: Camera, showStateBorders: boolean): void;
   applyViewFit(screenWidth: number, screenHeight: number): void;
@@ -372,7 +400,7 @@ export function buildWorldScene(screenWidth: number, screenHeight: number): Worl
   function drawHighlights(
     selectedEntityIds: ReadonlySet<string>,
     hoveredEntityId: string | null,
-    selectionColor: number = defaultSelectionColor,
+    fill: HighlightFill = DEFAULT_HIGHLIGHT_FILL,
   ) {
     // One shared Graphics accumulates every selected entity's shape, same
     // "many shapes, one Graphics object" approach `land` uses.
@@ -380,14 +408,32 @@ export function buildWorldScene(screenWidth: number, screenHeight: number): Worl
     for (const id of selectedEntityIds) {
       const selected = findById(id);
       if (!selected) continue;
-      // Rivers are the one selectable entity with no interior.
+      // Rivers are the one selectable entity with no interior -- image fill
+      // never applies to a line, only "color" mode makes sense here.
       if (selected.geometry.type === "LineString" || selected.geometry.type === "MultiLineString") {
-        strokeLine(selectionGraphic, selected.geometry, selectionColor);
+        strokeLine(selectionGraphic, selected.geometry, fill.color);
         continue;
       }
       const geometry = selected.geometry as AreaGeometry;
-      fillGeometry(selectionGraphic, geometry, selectionColor, SELECTION_FILL_ALPHA);
-      strokeGeometry(selectionGraphic, geometry, selectionColor);
+      const texture = fill.fillMode === "image" && fill.flagCode ? cachedFlagTexture(fill.flagCode) : undefined;
+      if (texture) {
+        fillGeometryTexture(selectionGraphic, geometry, texture, fill.flagOffsetX, fill.flagOffsetY);
+      } else {
+        fillGeometry(selectionGraphic, geometry, fill.color, SELECTION_FILL_ALPHA);
+        // Texture not loaded yet (or export hasn't preloaded it) -- draw the
+        // color fallback now, kick off the load, and redraw with the same
+        // args once it resolves. Export always preloads every flag it needs
+        // before its frame loop starts (exportPipeline.ts), so this path is
+        // live-preview-only in practice; a redraw firing between two export
+        // frames would just be a no-op re-render of the same cached state.
+        if (fill.fillMode === "image" && fill.flagCode) {
+          loadFlagTexture(fill.flagCode).then(() => {
+            if (destroyed) return;
+            drawHighlights(selectedEntityIds, hoveredEntityId, fill);
+          });
+        }
+      }
+      strokeGeometry(selectionGraphic, geometry, fill.color);
     }
 
     hoverGraphic.clear();

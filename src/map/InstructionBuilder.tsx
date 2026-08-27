@@ -9,12 +9,24 @@ import {
   buildScene,
   sceneAnimationValue,
   sceneHighlightColor,
+  sceneHighlightFillMode,
+  sceneHighlightFlagCode,
+  sceneHighlightFlagOffsetX,
+  sceneHighlightFlagOffsetY,
   sceneZoomPercent,
   type AnimationValue,
 } from "./scenes";
 import { useSceneStore } from "./sceneStore";
 import { EXPORT_PROFILES, useExportStore } from "./exportStore";
 import { defaultSelectionColor, hexToNumber, numberToHex } from "./mapColors";
+import { flagAssetUrl, listFlagOptions } from "./flags";
+
+// Position sliders run -50..50 (full drag range, same feel as any other
+// slider) but map to a much smaller actual offset -- fillGeometryTexture's
+// offset is a fraction of the entity's own bounding box, so even 0.5 (50%)
+// panned the flag drastically for a small drag. /5000 caps the real range
+// at +/-0.01 (1%), which reads as a fine, controllable nudge instead.
+const FLAG_OFFSET_SLIDER_SCALE = 5000;
 
 // Right-panel Instruction Builder (roadmap.md Phase 6, section 3). This
 // entity picker deliberately does NOT require clicking the map -- per
@@ -45,8 +57,21 @@ export function InstructionBuilder() {
   // absolute zoom -- see camera.ts's focusOnBounds zoomMultiplier.
   const [zoomPercent, setZoomPercent] = useState(100);
   // Pixi packed-number hex, only meaningful while animation === "highlight".
-  // Becomes part of the Scene's highlight action -- see buildScene.
+  // Becomes part of the Scene's highlight action -- see buildScene. Both
+  // this and the flag fields below stay live/editable together regardless
+  // of which is currently active -- `highlightFillMode` (last-edit-wins) is
+  // the only thing deciding which one actually renders.
   const [highlightColor, setHighlightColor] = useState(defaultSelectionColor);
+  const [highlightFlagCode, setHighlightFlagCode] = useState<string | null>(null);
+  const [highlightFillMode, setHighlightFillMode] = useState<"color" | "image">("color");
+  // Position sliders' values -- fraction of the entity's own bounding box
+  // to pan the flag image within its silhouette (see render.ts's
+  // fillGeometryTexture). 0 = centered/unadjusted. These don't participate
+  // in the color/image last-edit-wins switch -- they only refine the flag
+  // fill once one's already active.
+  const [highlightFlagOffsetX, setHighlightFlagOffsetX] = useState(0);
+  const [highlightFlagOffsetY, setHighlightFlagOffsetY] = useState(0);
+  const [flagQuery, setFlagQuery] = useState("");
 
   // 6.3: clicking a scene block in Timeline.tsx sets editingSceneId, which
   // this form re-populates from -- only depends on editingSceneId itself
@@ -62,6 +87,10 @@ export function InstructionBuilder() {
     setDuration(scene.duration);
     setZoomPercent(sceneZoomPercent(scene));
     setHighlightColor(sceneHighlightColor(scene));
+    setHighlightFlagCode(sceneHighlightFlagCode(scene));
+    setHighlightFillMode(sceneHighlightFillMode(scene));
+    setHighlightFlagOffsetX(sceneHighlightFlagOffsetX(scene));
+    setHighlightFlagOffsetY(sceneHighlightFlagOffsetY(scene));
     setSelectedEntity(
       scene.targetEntityId ? (entities.find((e) => e.id === scene.targetEntityId) ?? null) : null,
     );
@@ -88,7 +117,17 @@ export function InstructionBuilder() {
   // fully resets/exits edit mode afterward rather than carrying anything
   // over -- editing is a one-off correction, not a repeated pattern.
   const submit = () => {
-    const scene = buildScene(selectedEntity, animation, duration, zoomPercent, highlightColor);
+    const scene = buildScene(
+      selectedEntity,
+      animation,
+      duration,
+      zoomPercent,
+      highlightColor,
+      highlightFlagCode,
+      highlightFillMode,
+      highlightFlagOffsetX,
+      highlightFlagOffsetY,
+    );
     if (!scene) return;
     if (editingSceneId) {
       updateScene(editingSceneId, scene);
@@ -108,6 +147,11 @@ export function InstructionBuilder() {
     setDuration(3);
     setZoomPercent(100);
     setHighlightColor(defaultSelectionColor);
+    setHighlightFlagCode(null);
+    setHighlightFillMode("color");
+    setHighlightFlagOffsetX(0);
+    setHighlightFlagOffsetY(0);
+    setFlagQuery("");
   };
 
   // Same substring search interactionStore already exposes -- no new
@@ -140,20 +184,91 @@ export function InstructionBuilder() {
     // handler). Only "highlight" additionally shows the highlight itself.
     interactionStore.requestFocus(entity.id, { zoomPercent });
     if (animation === "highlight") {
-      interactionStore.toggleEntity(entity.id, false, highlightColor);
+      interactionStore.toggleEntity(entity.id, false, {
+        color: highlightColor,
+        flagCode: highlightFlagCode ?? undefined,
+        fillMode: highlightFillMode,
+        flagOffsetX: highlightFlagOffsetX,
+        flagOffsetY: highlightFlagOffsetY,
+      });
     }
   };
 
-  // Live-updates the map preview as the color picker moves, same "instant
-  // feedback" principle as pickEntity above -- only meaningful once an
-  // entity is already highlighted in the preview.
+  // Live-updates the map preview as the color picker moves or a flag is
+  // picked, same "instant feedback" principle as pickEntity above -- only
+  // meaningful once an entity is already highlighted in the preview. Each
+  // setter also flips `highlightFillMode` to its own mode -- last-edit-wins,
+  // per the user's requirement that touching either control makes it the
+  // active fill, without discarding the other's last value.
   const changeHighlightColor = (hex: string) => {
     const color = hexToNumber(hex);
     setHighlightColor(color);
+    setHighlightFillMode("color");
     if (animation === "highlight" && selectedEntity) {
-      interactionStore.toggleEntity(selectedEntity.id, false, color);
+      interactionStore.toggleEntity(selectedEntity.id, false, {
+        color,
+        flagCode: highlightFlagCode ?? undefined,
+        fillMode: "color",
+        flagOffsetX: highlightFlagOffsetX,
+        flagOffsetY: highlightFlagOffsetY,
+      });
     }
   };
+
+  const pickFlag = (alpha2: string) => {
+    setHighlightFlagCode(alpha2);
+    setHighlightFillMode("image");
+    if (animation === "highlight" && selectedEntity) {
+      interactionStore.toggleEntity(selectedEntity.id, false, {
+        color: highlightColor,
+        flagCode: alpha2,
+        fillMode: "image",
+        flagOffsetX: highlightFlagOffsetX,
+        flagOffsetY: highlightFlagOffsetY,
+      });
+    }
+  };
+
+  // Live-updates the map preview as a position slider moves, same
+  // "instant feedback" principle as the color/flag pickers -- doesn't
+  // touch `highlightFillMode` itself, since these only refine whichever
+  // fill (color or image) is already active.
+  const changeFlagOffsetX = (value: number) => {
+    setHighlightFlagOffsetX(value);
+    if (animation === "highlight" && selectedEntity) {
+      interactionStore.toggleEntity(selectedEntity.id, false, {
+        color: highlightColor,
+        flagCode: highlightFlagCode ?? undefined,
+        fillMode: highlightFillMode,
+        flagOffsetX: value,
+        flagOffsetY: highlightFlagOffsetY,
+      });
+    }
+  };
+
+  const changeFlagOffsetY = (value: number) => {
+    setHighlightFlagOffsetY(value);
+    if (animation === "highlight" && selectedEntity) {
+      interactionStore.toggleEntity(selectedEntity.id, false, {
+        color: highlightColor,
+        flagCode: highlightFlagCode ?? undefined,
+        fillMode: highlightFillMode,
+        flagOffsetX: highlightFlagOffsetX,
+        flagOffsetY: value,
+      });
+    }
+  };
+
+  // All country entities with a resolvable flag, independent of which
+  // entity is actually being highlighted -- free choice, per the user's
+  // "no restriction on which country flag" requirement. Filtered by
+  // flagQuery the same substring-match way entity search already works.
+  const flagOptions = useMemo(() => listFlagOptions(entities), [entities]);
+  const filteredFlagOptions = useMemo(() => {
+    const q = flagQuery.trim().toLowerCase();
+    if (!q) return flagOptions;
+    return flagOptions.filter((option) => option.name.toLowerCase().includes(q));
+  }, [flagOptions, flagQuery]);
 
   return (
     <div className="zone">
@@ -292,6 +407,59 @@ export function InstructionBuilder() {
             onChange={changeHighlightColor}
             prefixed
           />
+          <span className="ib-field-label ib-flags-label">Flags</span>
+          <input
+            type="text"
+            placeholder="Search flags..."
+            value={flagQuery}
+            onChange={(e) => setFlagQuery(e.target.value)}
+            className="ib-input"
+          />
+          <div className="ib-flag-grid">
+            {filteredFlagOptions.map((option) => (
+              <button
+                type="button"
+                key={option.alpha2}
+                className={
+                  "ib-flag-option" +
+                  (highlightFillMode === "image" && highlightFlagCode === option.alpha2
+                    ? " ib-flag-option-active"
+                    : "")
+                }
+                title={option.name}
+                onClick={() => pickFlag(option.alpha2)}
+              >
+                <img src={flagAssetUrl(option.alpha2)} alt={option.name} />
+              </button>
+            ))}
+          </div>
+          <span className="ib-field-label ib-flags-label">Flag Position</span>
+          <div className="ib-slider-row">
+            <span className="ib-slider-caption">Horizontal</span>
+            <input
+              type="range"
+              className="ib-slider"
+              min={-50}
+              max={50}
+              step={1}
+              value={Math.round(highlightFlagOffsetX * FLAG_OFFSET_SLIDER_SCALE)}
+              onChange={(e) => changeFlagOffsetX(Number(e.target.value) / FLAG_OFFSET_SLIDER_SCALE)}
+              disabled={highlightFillMode !== "image" || !highlightFlagCode}
+            />
+          </div>
+          <div className="ib-slider-row">
+            <span className="ib-slider-caption">Vertical</span>
+            <input
+              type="range"
+              className="ib-slider"
+              min={-50}
+              max={50}
+              step={1}
+              value={Math.round(highlightFlagOffsetY * FLAG_OFFSET_SLIDER_SCALE)}
+              onChange={(e) => changeFlagOffsetY(Number(e.target.value) / FLAG_OFFSET_SLIDER_SCALE)}
+              disabled={highlightFillMode !== "image" || !highlightFlagCode}
+            />
+          </div>
         </div>
       )}
       <div className="ib-btn-row">

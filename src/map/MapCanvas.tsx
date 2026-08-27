@@ -389,15 +389,26 @@ export function MapCanvas() {
         // Redraws the highlight overlay whenever the store's
         // selected/hovered entity changes -- from pointer events here, or
         // from the Instruction Builder selecting an entity by name.
-        unsubscribeInteraction = interactionStore.subscribe(() => {
-          const { selectedEntityIds, hoveredEntityId, selectedColor } = interactionStore.getState();
-          scene.drawHighlights(selectedEntityIds, hoveredEntityId, selectedColor ?? defaultSelectionColor);
-        });
-        scene.drawHighlights(
-          interactionStore.getState().selectedEntityIds,
-          interactionStore.getState().hoveredEntityId,
-          interactionStore.getState().selectedColor ?? defaultSelectionColor,
-        );
+        const redrawHighlights = () => {
+          const {
+            selectedEntityIds,
+            hoveredEntityId,
+            selectedColor,
+            selectedFlagCode,
+            selectedFillMode,
+            selectedFlagOffsetX,
+            selectedFlagOffsetY,
+          } = interactionStore.getState();
+          scene.drawHighlights(selectedEntityIds, hoveredEntityId, {
+            color: selectedColor ?? defaultSelectionColor,
+            flagCode: selectedFlagCode,
+            fillMode: selectedFillMode,
+            flagOffsetX: selectedFlagOffsetX,
+            flagOffsetY: selectedFlagOffsetY,
+          });
+        };
+        unsubscribeInteraction = interactionStore.subscribe(redrawHighlights);
+        redrawHighlights();
 
         // Fly the camera to fit whatever entity the Instruction Builder
         // (fast interactive fly-to) or Phase 6 scene playback (scripted,

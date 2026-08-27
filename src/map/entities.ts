@@ -7,7 +7,7 @@ import alpha3ToNumeric from "./data/iso-alpha3-to-numeric.json";
 // drifting out of sync. Used to abbreviate small countries' labels down to
 // their ISO alpha-3 code (see buildLabelEntities) instead of vendoring a
 // second lookup file just for this.
-const numericToAlpha3: Record<string, string> = Object.fromEntries(
+export const numericToAlpha3: Record<string, string> = Object.fromEntries(
   Object.entries(alpha3ToNumeric as Record<string, string>).map(([alpha3, numeric]) => [numeric, alpha3]),
 );
 

@@ -130,7 +130,11 @@ registerAction("pan", (params, durationSeconds, cameraStart) => {
 registerAction("highlight", (params, _durationSeconds, _cameraStart) => {
   const entityId = params.entityId as string;
   const color = params.color as number | undefined;
-  interactionStore.toggleEntity(entityId, false, color);
+  const flagCode = (params.flagCode as string | null | undefined) ?? undefined;
+  const fillMode = params.fillMode as "color" | "image" | undefined;
+  const flagOffsetX = params.flagOffsetX as number | undefined;
+  const flagOffsetY = params.flagOffsetY as number | undefined;
+  interactionStore.toggleEntity(entityId, false, { color, flagCode, fillMode, flagOffsetX, flagOffsetY });
 });
 
 // "clearHighlight": clears the whole selection rather than removing only

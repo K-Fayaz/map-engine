@@ -1,4 +1,4 @@
-import { Container, Graphics, BitmapText, BitmapFont } from "pixi.js";
+import { Container, Graphics, BitmapText, BitmapFont, Matrix, type Texture } from "pixi.js";
 import type { AreaGeometry, LineGeometry, Position } from "./loadWorldData";
 import type { Entity } from "./entities";
 import { clampCamera, MIN_ZOOM, type Camera } from "./camera";
@@ -217,6 +217,69 @@ export function fillGeometry(
         graphics.poly(points, true);
         if (ringIndex === 0) {
           graphics.fill({ color: fillColor, alpha });
+        } else {
+          graphics.cut();
+        }
+      }
+    });
+  }
+}
+
+// Same ring/hole/antimeridian-split iteration as fillGeometry, but fills
+// with an image (e.g. a flag) instead of a flat color -- used for a scene
+// highlight's "image" fill mode (see scenes.ts's `fillMode`). Each ring is
+// still its own `poly()`+`fill()` call, so `textureSpace: "local"` (no
+// explicit `matrix`) makes Pixi auto-scale the texture to exactly stretch
+// across *that ring's own* bounding box (see generateTextureFillMatrix in
+// pixi.js) -- correct, simple, and needs no manual bounds/Matrix math for
+// the common single-ring-per-piece case. A multi-piece antimeridian-split
+// country (Russia, Fiji) ends up with the same texture independently
+// stretched per piece rather than one continuous image across all of
+// them -- an acceptable simplification, not a broken result (each piece
+// still shows a correctly cropped, undistorted-relative-to-itself flag).
+//
+// `offsetX`/`offsetY` (each a fraction of the ring's own projected
+// bounding box, e.g. 0.1 = 10% of its width/height) pan which part of the
+// texture shows through that same fixed silhouette -- the Instruction
+// Builder's two position sliders. Pixi's `textureSpace: "local"` fill
+// derives its UV mapping as `(worldPoint - boundsMin) / boundsSize`
+// (verified against pixi.js's own generateTextureFillMatrix); supplying a
+// `matrix` translates the *input* to that mapping before it's applied, so
+// translating by `-offsetX * boundsWidth` shifts the resulting UV by
+// `+offsetX` -- computed per-ring/piece from that piece's own `points`
+// (same coordinate space Pixi's internal bounds computation would use),
+// not a single shared bounds for the whole (possibly multi-piece) entity.
+export function fillGeometryTexture(
+  graphics: Graphics,
+  geometry: AreaGeometry,
+  texture: Texture,
+  offsetX: number = 0,
+  offsetY: number = 0,
+) {
+  for (const rings of toPolygons(geometry)) {
+    const realRings = rings.filter((ring) => !isPolarClosureRing(ring));
+    if (realRings.length === 0) continue;
+    realRings.forEach((ring, ringIndex) => {
+      for (const piece of splitAtAntimeridian(ring).map(closePolarWrap)) {
+        const points = projectPoints(piece);
+        graphics.poly(points, true);
+        if (ringIndex === 0) {
+          if (offsetX === 0 && offsetY === 0) {
+            graphics.fill({ texture, textureSpace: "local" });
+          } else {
+            let minX = Infinity;
+            let maxX = -Infinity;
+            let minY = Infinity;
+            let maxY = -Infinity;
+            for (let i = 0; i < points.length; i += 2) {
+              minX = Math.min(minX, points[i]);
+              maxX = Math.max(maxX, points[i]);
+              minY = Math.min(minY, points[i + 1]);
+              maxY = Math.max(maxY, points[i + 1]);
+            }
+            const matrix = new Matrix().translate(-offsetX * (maxX - minX), -offsetY * (maxY - minY));
+            graphics.fill({ texture, matrix, textureSpace: "local" });
+          }
         } else {
           graphics.cut();
         }

@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { buildWorldScene, MAX_ZOOM, OCEAN_COLOR, type WorldScene } from "./worldRenderer";
 import { resolveAt, timelineDuration } from "./timelineResolver";
 import { defaultSelectionColor } from "./mapColors";
+import { loadFlagTexture } from "./flags";
 import type { Scene } from "./scenes";
 import type { Entity } from "./entities";
 
@@ -26,6 +27,22 @@ export interface ExportSettings {
 // frame rather than a zero-length/invalid video.
 export function computeTotalFrames(scenes: Scene[], fps: number): number {
   return Math.max(1, Math.ceil(timelineDuration(scenes) * fps));
+}
+
+// Export renders synchronously frame-by-frame (renderFrame below), so it
+// can't tolerate the live path's "draw color, upgrade to texture once
+// loaded" race (worldRenderer.ts's drawHighlights) -- every flag any scene
+// might use has to already be cached before the frame loop starts.
+function collectFlagCodes(scenes: Scene[]): string[] {
+  const codes = new Set<string>();
+  for (const scene of scenes) {
+    for (const action of scene.actions) {
+      if (action.type === "highlight" && typeof action.params.flagCode === "string") {
+        codes.add(action.params.flagCode);
+      }
+    }
+  }
+  return [...codes];
 }
 
 export interface RunExportLoopOptions {
@@ -110,6 +127,7 @@ export async function runExport(
   const totalFrames = computeTotalFrames(scenes, fps);
 
   const { app, scene } = await buildExportRenderer(width, height);
+  await Promise.all(collectFlagCodes(scenes).map(loadFlagTexture));
   let cancelled = false;
 
   const renderFrame = (t: number): Uint8Array => {
@@ -126,11 +144,13 @@ export async function runExport(
     // at 1080x1920, which is what made this visible. Matches what
     // MapCanvas.tsx's onFocusRequest already does for the live canvas.
     const resolved = resolveAt(scenes, entities, t, scene.viewW, scene.viewH, scene.baseScaleX, scene.baseScaleY, MAX_ZOOM, cameraStart);
-    scene.drawHighlights(
-      new Set(resolved.highlightedEntityId ? [resolved.highlightedEntityId] : []),
-      null,
-      resolved.highlightColor ?? defaultSelectionColor,
-    );
+    scene.drawHighlights(new Set(resolved.highlightedEntityId ? [resolved.highlightedEntityId] : []), null, {
+      color: resolved.highlightColor ?? defaultSelectionColor,
+      flagCode: resolved.highlightFlagCode,
+      fillMode: resolved.highlightFillMode,
+      flagOffsetX: resolved.highlightFlagOffsetX,
+      flagOffsetY: resolved.highlightFlagOffsetY,
+    });
     scene.applyCamera(resolved.camera, showStateBorders);
     app.renderer.render(app.stage);
     const { pixels } = app.renderer.extract.pixels({

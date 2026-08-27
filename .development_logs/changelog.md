@@ -5,6 +5,135 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-27 — Flag-image highlight fill, with position sliders
+
+### Summary
+Follow-up to the same day's per-scene highlight-color feature: the user
+wanted a second fill option for Highlight scenes -- cover the entity with
+an image (a country's flag) instead of a solid color, freely chosen from a
+searchable grid of all flags, independent of which entity is actually
+highlighted (no restriction on "matching" flag to entity). Both controls
+(color picker and flag grid) stay live in the form together; which one
+actually renders is last-edit-wins, not a toggle -- touching color makes
+color active, picking a flag afterward makes the flag active, touching
+color again switches back, persisted explicitly as a `fillMode` on the
+Scene (not inferred), so a re-opened scene renders exactly what was last
+saved. Planned via `EnterPlanMode` before implementation, reusing the same
+seven-file pipeline (`scenes.ts` -> `actionRegistry.ts` ->
+`interactionStore.ts` -> `worldRenderer.ts`, mirrored into
+`timelineResolver.ts`/`exportPipeline.ts` for export) the color feature had
+already established.
+
+Once shipped and confirmed working (flag rendered correctly, clipped to
+India's silhouette), a follow-up request asked for a way to nudge the
+flag's position within the entity's shape -- a horizontal/vertical slider
+with a centered dot, panning left/right or up/down. Implemented as a
+`Matrix` offset fed into Pixi's texture fill (derived from reading
+`pixi.js`'s own `generateTextureFillMatrix` source, not empirically
+tested/verified beyond the user's own visual check in the app). First pass
+mapped the sliders' full drag range to a very wide +/-0.5 (50% of the
+entity's own bounding box) offset, which felt wildly oversensitive for a
+small drag -- capped down to +/-0.01 (1%) while keeping the same slider UI
+range, so the same physical drag now reads as a fine, controllable nudge.
+
+### Changes
+
+**New vendored assets**
+- `public/flags/4x3/*.svg` -- 271 flag SVGs from the `flag-icons` npm
+  package (MIT), copied in once rather than kept as a runtime dependency
+  (nothing in `src/` imports the package itself). Offline-servable, no
+  network calls at runtime -- this is a Tauri desktop app with no `http`
+  capability granted.
+- `src/map/data/iso-alpha3-to-alpha2.json` -- new vendored ISO 3166-1
+  table (same pattern as the existing alpha3<->numeric one), generated
+  once from a standard ISO source and cross-checked to cover all 249
+  countries the app already knows about, with zero gaps.
+
+**New `src/map/flags.ts`**
+- `alpha2ForEntityId`, `flagAssetUrl`, `listFlagOptions` (reuses the app's
+  own country entities/names for the search grid, not a second country
+  list), and `loadFlagTexture`/`cachedFlagTexture` (an in-memory texture
+  cache shared by both the live renderer and export's preload step).
+
+**`src/map/render.ts`**
+- New `fillGeometryTexture`, a sibling to the existing `fillGeometry`
+  (left untouched, ~8 call sites) -- same ring/hole/antimeridian-split
+  iteration, but fills with a texture via Pixi's `textureSpace: "local"`
+  (auto-fits the image to each ring's own bounding box, no manual bounds
+  math needed for the plain case). Gained `offsetX`/`offsetY` params (each
+  a fraction of the ring's own bounding box) for the position sliders --
+  when non-zero, computes that ring's bounds from its own projected
+  points and passes a translation `Matrix` into the fill call.
+
+**`src/map/worldRenderer.ts`**
+- `drawHighlights`'s third param became a `HighlightFill` object
+  (`color`, `flagCode`, `fillMode`, `flagOffsetX`, `flagOffsetY`) instead
+  of a bare color. When `fillMode === "image"` and the flag texture is
+  already cached, fills with the texture; otherwise draws the color
+  fallback and kicks off the async load, redrawing once it resolves.
+
+**`src/map/interactionStore.ts` / `scenes.ts` / `actionRegistry.ts` /
+`timelineResolver.ts` / `exportPipeline.ts` / `MapCanvas.tsx` /
+`InstructionBuilder.tsx`**
+- The five new values threaded through the same pipeline `color` already
+  used, end to end: `toggleEntity`'s trailing params became a bundled
+  options object (`highlight?: { color?, flagCode?, fillMode?,
+  flagOffsetX?, flagOffsetY? }`) rather than more stacked positional args;
+  `buildScene`/`sceneHighlight*` readers extended the same way
+  `sceneHighlightColor` was; export's `resolveAt`/`ResolvedState` carry
+  the same fields, and `exportPipeline.ts` preloads every distinct flag
+  the timeline actually uses before its frame loop starts (export renders
+  synchronously frame-by-frame, so it can't tolerate the live path's
+  "draw color, upgrade to texture once loaded" race -- see Deferred below
+  for where that race *can* still show up).
+- `InstructionBuilder.tsx` gained a searchable flag grid (plain `<img>`
+  thumbnails, no Pixi needed for the picker itself) below the color
+  picker, and two `<input type="range">` position sliders styled as a
+  thin track with a centered round thumb -- both live-update the map
+  preview the same "instant feedback" way the color picker already did.
+
+### Decisions
+- **Per-scene, free-choice flag, not restricted to the highlighted
+  entity's own country.** Confirmed with the user up front.
+- **Last-edit-wins between color and image, not a toggle or priority
+  order, persisted explicitly as `fillMode`.** Confirmed via back-and-forth
+  discussion -- both controls stay live/editable regardless of which is
+  currently active.
+- **`flag-icons` vendored locally, not kept as a dependency or fetched at
+  runtime.** This app has no `http` Tauri capability; confirmed via
+  `AskUserQuestion` that adding the small library (as a one-time asset
+  source) was preferable to hand-building a flag set.
+- **Position offset expressed as a fraction of the entity's own bounding
+  box, not raw pixels.** So the same slider range behaves sensibly whether
+  the highlighted entity is Russia or Andorra.
+- **Slider UI range left at -50..50 (unchanged); only the real-offset
+  scale factor changed (/100 -> /5000, i.e. max +/-0.5 -> +/-0.01).** User
+  feedback after trying it: default sensitivity made a small drag move the
+  flag drastically. Kept the same drag *feel* rather than also touching
+  the slider's own min/max/step.
+
+### Deferred / not yet implemented
+- **The live-preview texture-load race is not fully airtight.** If the
+  user changes selection/color/flag again *before* a not-yet-cached flag
+  texture finishes its first (near-instant, local-file) load, the async
+  `.then()` redraw can fire after a newer, correct redraw already
+  happened, briefly repainting stale data before the next real state
+  change corrects it. Export is unaffected (see above -- it preloads
+  everything first). Flagged as a known, low-probability, self-correcting
+  cosmetic edge case rather than fixed -- not stress-tested.
+- The position-offset Matrix math (`render.ts`'s `fillGeometryTexture`)
+  was derived by reading `pixi.js`'s own transpiled source
+  (`generateTextureFillMatrix`), not verified against Pixi's own tests or
+  documentation examples -- only checked that the sliders visibly move the
+  flag and that the direction didn't read as backwards to the user.
+- No general audit of how the flag fill looks on multi-piece
+  antimeridian-split countries (Russia, Fiji) -- each piece is
+  independently stretched/offset rather than treated as one continuous
+  image, an accepted simplification carried over from the flag feature's
+  own initial design, not re-examined once the offset sliders were added.
+
+---
+
 ## 2026-08-27 — Per-scene custom highlight color
 
 ### Summary
