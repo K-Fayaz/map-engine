@@ -96,9 +96,31 @@
 }
 
 .timeline-export-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.timeline-export-progress-track {
+  width: 100px;
+  height: 6px;
+  border-radius: 3px;
+  background: #2f323b;
+  overflow: hidden;
+}
+
+.timeline-export-progress-fill {
+  height: 100%;
+  background: #4a7dfc;
+  border-radius: 3px;
+  transition: width 0.15s ease-out;
+}
+
+.timeline-export-progress-label {
   font-family: sans-serif;
   font-size: 12px;
   color: #9a9ea6;
+  min-width: 32px;
 }
 
 .timeline-export-cancel {

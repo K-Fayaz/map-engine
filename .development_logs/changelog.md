@@ -5,6 +5,92 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-28 — Flag fill "contain" aspect fix, export progress percentage
+
+### Summary
+Two small, unrelated follow-ups the user found from using the previous
+session's flag-fill feature and the existing export flow.
+
+**Flag fill squished circular details (e.g. India's Ashoka Chakra).**
+`fillGeometryTexture` (render.ts) had been using Pixi's default
+`textureSpace: "local"` behavior, which scales the texture independently on
+X and Y to exactly fill the entity's bounding box -- fine for a plain
+rectangle, but any entity whose bbox aspect ratio doesn't match the flag's
+stretches circular details unevenly (India's tall, narrow bbox turned the
+Chakra into a visible ellipse, confirmed from a user screenshot). Discussed
+"contain" (uniform scale, whole flag visible, letterboxed) vs "cover"
+(uniform scale, crops overflow, no letterbox) before implementing --
+confirmed "contain." Root cause and fix scope (small blast radius --
+contained to one function -- but not trivial, since it required
+counteracting Pixi's own automatic per-axis normalization rather than just
+adding an independent transform) were explained to the user before writing
+any code.
+
+**Export progress showed a raw frame count ("Frame 42 / 90"), not something
+a user watching an export cares about.** Changed to a 0-100% bar + label,
+purely presentational -- `exportStore.ts`'s `currentFrame`/`totalFrames`
+already carried everything needed, no data plumbing changed.
+
+### Changes
+
+**`src/map/render.ts`**
+- `fillGeometryTexture` now always builds its own fill `Matrix` (previously
+  only did this for the position-offset case, falling back to Pixi's
+  default un-corrected local-space fill at offset 0 -- that default path is
+  exactly what produced the squish, so it's gone now). Computes a uniform
+  `scale = min(boundsWidth/texture.width, boundsHeight/texture.height)`
+  per ring/piece, derives `kX`/`kY` (1 on whichever axis is the tight
+  constraint, >1 -- letterboxed -- on the other), and folds the existing
+  `offsetX`/`offsetY` sliders into the same matrix as a translation of the
+  now-inscribed (not stretched) flag rectangle, rather than a UV pan --
+  contain already shows 100% of the image, so there's no hidden crop left
+  to reveal by panning the sampling coordinates the way a stretch/cover fit
+  would have.
+- Since Pixi forces `repeat` addressing for any non-gradient texture fill
+  (confirmed by reading `generateTextureFillMatrix`), the letterbox margins
+  this introduces show a tiled repeat of the flag's own edge pixels
+  bleeding in, not a blank gap -- noted as an accepted visual side effect
+  of choosing "contain," not a bug.
+
+**`src/map/Timeline.tsx` / `Timeline.css`**
+- The export progress `<span>` (`Frame ${currentFrame} / ${totalFrames}`)
+  replaced with a `timeline-export-progress` bar: a track + fill div sized
+  by `width: ${percent}%`, plus a `${percent}%` label. `percent` is derived
+  inline from the same `exportCurrentFrame`/`exportTotalFrames` values
+  already read from `exportStore`, nothing new added to the store or the
+  export pipeline itself.
+
+### Decisions
+- **"Contain," not "cover," for the flag fit.** User's explicit choice
+  after being walked through the tradeoff (crop-with-no-gaps vs.
+  show-the-whole-image-with-letterbox-margins).
+- **Position sliders' semantics changed with the fit mode, not
+  re-litigated.** Under the old stretch-to-fill behavior, offset panned
+  *which part* of the texture was sampled (a crop-reveal, cover-style
+  concept). Under contain, the whole image is already visible, so offset
+  instead repositions the *already-whole, already-scaled* flag rectangle
+  within the entity's bounding box -- the natural adaptation once contain
+  was chosen, not a separate discussion.
+- **Percentage over frame count for export progress.** User's own
+  reasoning, taken directly: the person watching an export cares about how
+  much is left, not an implementation detail like frame numbers.
+
+### Deferred / not yet implemented
+- The export progress bar's visual correctness during a real export run
+  wasn't confirmed in this session -- verification of the color-highlight
+  and flag-fill features could be driven through `chrome-devtools` against
+  the Vite dev server directly, but the actual export path calls Tauri's
+  `invoke` (`@tauri-apps/api/core`), which only exists inside the real
+  Tauri webview, not a plain browser tab hitting the dev server. Typecheck
+  and the existing test suite pass; the user was asked to confirm visually
+  in the real app.
+- No re-audit of the antimeridian-split multi-piece case (Russia, Fiji)
+  under the new contain fit -- each piece still gets its own independently
+  computed contain-fit + offset, carried over unchanged from the previous
+  session's accepted simplification.
+
+---
+
 ## 2026-08-27 — Flag-image highlight fill, with position sliders
 
 ### Summary

@@ -302,11 +302,26 @@ export function Timeline() {
         </button>
         {isExporting && (
           <>
-            <span className="timeline-export-progress">
-              {exportTotalFrames > 0
-                ? `Frame ${exportCurrentFrame} / ${exportTotalFrames}`
-                : "Starting…"}
-            </span>
+            {/* Percentage, not a raw frame count -- the user cares about
+                how much of the export is done, not an implementation
+                detail like frame numbers (exportCurrentFrame/
+                exportTotalFrames are still what drive it, just not shown
+                literally). */}
+            <div className="timeline-export-progress">
+              <div className="timeline-export-progress-track">
+                <div
+                  className="timeline-export-progress-fill"
+                  style={{
+                    width: `${exportTotalFrames > 0 ? Math.round((exportCurrentFrame / exportTotalFrames) * 100) : 0}%`,
+                  }}
+                />
+              </div>
+              <span className="timeline-export-progress-label">
+                {exportTotalFrames > 0
+                  ? `${Math.round((exportCurrentFrame / exportTotalFrames) * 100)}%`
+                  : "Starting…"}
+              </span>
+            </div>
             <button type="button" className="timeline-export-cancel" onClick={cancelExport}>
               Cancel
             </button>
