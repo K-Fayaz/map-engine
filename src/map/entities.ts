@@ -151,6 +151,109 @@ export function computeBoundingBox(geometry: Geometry): BoundingBox {
 // (negative) side spans ~111deg (mainland+Alaska+Hawaii) vs. ~7deg for the
 // stray Aleutian tip; Russia's dominant (positive) side spans ~160deg vs.
 // ~10deg for Chukotka.
+
+// A MultiPolygon's top-level polygons that sit far from the entity's main
+// landmass *and* are individually tiny get dropped before framing (not
+// touched here for hit-testing/culling -- see computeBoundingBox above,
+// same "leave those callers' behavior alone" reasoning). Concrete motivating
+// case: the Netherlands feature in the vendored world-atlas data bundles
+// mainland Netherlands together with its Caribbean special municipalities
+// (Bonaire, Saba, Sint Eustatius -- ~7500km away, near lon -68) as extra
+// polygons in the same MultiPolygon. "Pan to Netherlands" zoomed the camera
+// out to fit that whole ~76deg-wide span, leaving the actual mainland a
+// barely-visible speck.
+//
+// Not a blanket "biggest polygon wins" rule -- that would also cut Hawaii
+// out of "Pan to USA" (Hawaii sits ~30deg from the mainland+Alaska
+// cluster), which this codebase already treats as correct/desired (see the
+// antimeridian comment above: "USA's dominant side spans ~111deg
+// (mainland+Alaska+Hawaii)"). The distinguishing factor isn't distance --
+// it's whether the isolated piece is *also* too small to be worth the
+// zoom-out it forces. Hawaii (~16,637 sq km) stays; Bonaire+Saba+Sint
+// Eustatius (13-328 sq km each) go.
+const DISTANT_EXCLAVE_GAP_DEGREES = 10;
+
+// Raw shoelace degrees^2, same units/caveats as computeArea below (not
+// physically accurate, fine for a coarse threshold) -- picked by eyeballing
+// real areas the same way ABBREVIATE_COUNTRY_BELOW_AREA was: Hawaii's real
+// ~16,637 sq km lands comfortably above this once run through the same
+// raw-shoelace formula at its own (low) latitude, while Bonaire/Saba/Sint
+// Eustatius land far below it.
+const NEGLIGIBLE_EXCLAVE_AREA = 1;
+
+function ringsBounds(rings: Position[][]): BoundingBox {
+  let minLon = Infinity;
+  let minLat = Infinity;
+  let maxLon = -Infinity;
+  let maxLat = -Infinity;
+  for (const ring of rings) {
+    for (const [lon, lat] of ring) {
+      if (lon < minLon) minLon = lon;
+      if (lon > maxLon) maxLon = lon;
+      if (lat < minLat) minLat = lat;
+      if (lat > maxLat) maxLat = lat;
+    }
+  }
+  return { minLon, minLat, maxLon, maxLat };
+}
+
+// Same ring-index exterior(add)/hole(subtract) shoelace convention as
+// computeArea below, just factored to run on one top-level polygon's rings
+// at a time -- needed here to rank/threshold individual polygons before
+// computeArea ever runs on the whole (possibly-filtered) geometry.
+function ringsArea(rings: Position[][]): number {
+  let area = 0;
+  rings.forEach((ring, ringIndex) => {
+    let ringArea = 0;
+    for (let i = 0; i < ring.length; i++) {
+      const [x1, y1] = ring[i];
+      const [x2, y2] = ring[(i + 1) % ring.length];
+      ringArea += x1 * y2 - x2 * y1;
+    }
+    ringArea = Math.abs(ringArea) / 2;
+    area += ringIndex === 0 ? ringArea : -ringArea;
+  });
+  return Math.abs(area);
+}
+
+// Rectangular gap (degrees) between two bounding boxes -- 0 if they
+// overlap/touch on both axes, otherwise the larger of the two axes' gaps
+// (so two polygons offset mostly in longitude, like most real exclaves, are
+// compared on that axis rather than diluted by a small latitude gap).
+function bboxGap(a: BoundingBox, b: BoundingBox): number {
+  const gapLon = Math.max(0, a.minLon - b.maxLon, b.minLon - a.maxLon);
+  const gapLat = Math.max(0, a.minLat - b.maxLat, b.minLat - a.maxLat);
+  return Math.max(gapLon, gapLat);
+}
+
+// A no-op for the common single-polygon case, and for MultiPolygons whose
+// parts are all either close together (ordinary archipelagos -- Indonesia,
+// Philippines, Japan) or individually substantial despite being far
+// (Alaska, Hawaii). See DISTANT_EXCLAVE_GAP_DEGREES above for the two-part
+// (far AND tiny) test this applies.
+function dropNegligibleExclaves(polygons: Position[][][]): Position[][][] {
+  if (polygons.length <= 1) return polygons;
+
+  const withStats = polygons.map((rings) => ({
+    rings,
+    bounds: ringsBounds(rings),
+    area: ringsArea(rings),
+  }));
+  const anchor = withStats.reduce((a, b) => (b.area > a.area ? b : a));
+
+  const kept = withStats.filter(
+    (p) =>
+      p === anchor ||
+      bboxGap(p.bounds, anchor.bounds) <= DISTANT_EXCLAVE_GAP_DEGREES ||
+      p.area >= NEGLIGIBLE_EXCLAVE_AREA,
+  );
+
+  // Never drop every polygon to nothing -- shouldn't happen (the anchor
+  // always survives its own filter), but guards against a degenerate
+  // all-zero-area geometry leaving `kept` empty.
+  return kept.length > 0 ? kept.map((p) => p.rings) : polygons;
+}
+
 export function computeFramingBounds(geometry: Geometry): BoundingBox {
   if (geometry.type !== "Polygon" && geometry.type !== "MultiPolygon") {
     return computeBoundingBox(geometry);
@@ -168,7 +271,7 @@ export function computeFramingBounds(geometry: Geometry): BoundingBox {
   let posMinLon = Infinity, posMaxLon = -Infinity, posMinLat = Infinity, posMaxLat = -Infinity;
 
   const polygons =
-    geometry.type === "Polygon" ? [geometry.coordinates] : geometry.coordinates;
+    geometry.type === "Polygon" ? [geometry.coordinates] : dropNegligibleExclaves(geometry.coordinates);
 
   for (const rings of polygons) {
     for (const ring of rings) {

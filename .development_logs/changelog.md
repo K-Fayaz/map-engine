@@ -5,6 +5,90 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-29 — Pan/Highlight camera-framing fix for exclave-bearing countries
+
+### Summary
+User reported that panning/highlighting the Netherlands (100%/120% zoom)
+zoomed the camera out to a near-world view instead of framing the country,
+while the same flow worked correctly for Singapore. Reproduced live via
+`chrome-devtools` against the Vite dev server (added a Pan + a Highlight
+scene for Netherlands, screenshotted the render) before touching any code,
+per the user's explicit "no code changes" instruction for that part of the
+session.
+
+Root cause, found by an `Explore`-style investigation into
+`computeFramingBounds`: the Netherlands feature in the vendored
+`world-atlas/countries-50m.json` data is a single `MultiPolygon` bundling
+mainland Netherlands (lon ~3-7degE) together with its Caribbean special
+municipalities Bonaire, Saba, and Sint Eustatius (lon ~-68deg) -- a ~76deg
+span in one GeoJSON feature. `computeFramingBounds` (`entities.ts`) took a
+naive min/max across every polygon in the feature, with only one special
+case (an antimeridian-crossing correction for Russia/Fiji/USA-style
+wraparound) -- Netherlands' span doesn't trigger that, so the camera fit
+the whole Europe-to-Caribbean bbox, leaving the mainland a barely-visible
+speck. Singapore has no such exclave (single tight `Polygon`), hence no bug
+there.
+
+User confirmed the desired fix ("zoom to mainland") after being walked
+through why a naive "biggest polygon wins" rule would also be wrong: it
+would cut Hawaii out of "Pan to USA," which this codebase already treats as
+correct/desired (documented in `computeFramingBounds`'s own antimeridian
+comment: USA's dominant side spans ~111deg, mainland+Alaska+Hawaii
+intentionally included). Landed on a two-part test instead -- drop a
+top-level polygon only if it's *both* far from the entity's largest polygon
+*and* individually tiny in absolute area -- so Hawaii (large, kept) and
+Netherlands' Caribbean islands (tiny, dropped) resolve differently despite
+both being "far."
+
+### Changes
+
+**`src/map/entities.ts`**
+- Added `dropNegligibleExclaves`, `ringsBounds`, `ringsArea`, `bboxGap`
+  helpers, plus two tuning constants: `DISTANT_EXCLAVE_GAP_DEGREES = 10`
+  (rectangular bbox gap threshold) and `NEGLIGIBLE_EXCLAVE_AREA = 1` (raw
+  shoelace degrees^2, same unitless scale as `computeArea`/
+  `ABBREVIATE_COUNTRY_BELOW_AREA`, calibrated by eyeballing Hawaii's real
+  ~16,637 sq km landing above the threshold and Bonaire/Saba/Sint
+  Eustatius's 13-328 sq km each landing below it).
+- `computeFramingBounds` now runs `dropNegligibleExclaves` over a
+  MultiPolygon's top-level polygons before the existing min/max +
+  antimeridian-shift scan -- a no-op for single-polygon geometries and for
+  MultiPolygons whose parts are all close together (ordinary archipelagos)
+  or individually substantial despite being far (Alaska, Hawaii).
+- Deliberately does not touch `computeBoundingBox` (hit-testing/culling) --
+  same "leave those callers alone" precedent the antimeridian fix already
+  established for that function.
+
+### Decisions
+- **Far AND tiny, not just far.** A distance-only or area-ratio-only rule
+  each failed a check against the existing endorsed USA behavior (worked
+  through with concrete numbers before implementing, not assumed) --
+  absolute area was the only measure that cleanly separated the Hawaii
+  (keep) and Netherlands-Caribbean (drop) cases.
+- **General heuristic, not a Netherlands-specific carve-out.** Flagged to
+  the user as a known tradeoff: any other country whose data bundles a
+  small, far exclave into one MultiPolygon (e.g. Chile+Easter Island,
+  Ecuador+Galapagos, if similarly bundled rather than separate entities in
+  this dataset) will now also frame to just the mainland. Not verified
+  against the actual vendored data for those specific countries this
+  session.
+- Verified in-browser (per the user's own follow-up ask, "don't verify on
+  devtools, I'll do it myself" applied to their own re-check, not the
+  initial fix): Netherlands now frames tightly on the mainland; USA's
+  mainland+Alaska framing is unchanged (Alaska survives the area
+  threshold).
+
+### Deferred / not yet implemented
+- No systematic audit of every other MultiPolygon country in the vendored
+  data for similar bundled-exclave cases -- Netherlands was the only one
+  confirmed; the fix is written to generalize but other cases are
+  unverified.
+- Threshold constants (`10` degrees, area `1`) are eyeballed, not derived
+  from a broader survey of country sizes/gaps -- same "tune by feel"
+  precedent as `ABBREVIATE_COUNTRY_BELOW_AREA`, not treated as final.
+
+---
+
 ## 2026-08-28 — Flag fill "contain" aspect fix, export progress percentage
 
 ### Summary
