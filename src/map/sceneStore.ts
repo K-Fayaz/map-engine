@@ -1,6 +1,30 @@
 import { create } from "zustand";
 import type { Scene } from "./scenes";
+import { sceneHighlightUploadedImageId } from "./scenes";
 import { dispatchScene, resetToBaseline } from "./actionRegistry";
+import { deleteUploadedImage } from "./uploadedImages";
+
+// If `removedScene` had an uploaded-image highlight fill, and no scene left
+// in `remainingScenes` still references that same id, deletes its app-data
+// copy (uploadedImages.ts) -- per the user's explicit choice to clean up
+// on scene deletion, not full project-aware reference counting (deferred
+// until real project save/load exists). Shared by deleteScene (the scene
+// is just gone) and updateScene (the scene's old content is being replaced
+// by new content that may or may not still reference the same upload).
+function cleanupOrphanedUpload(remainingScenes: Scene[], removedScene: Scene | undefined) {
+  if (!removedScene) return;
+  const uploadedImageId = sceneHighlightUploadedImageId(removedScene);
+  if (!uploadedImageId) return;
+  const stillReferenced = remainingScenes.some(
+    (scene) => sceneHighlightUploadedImageId(scene) === uploadedImageId,
+  );
+  if (!stillReferenced) {
+    deleteUploadedImage(uploadedImageId).catch(() => {
+      // Best-effort -- an export or another operation touching the same
+      // file shouldn't be able to block scene deletion/editing.
+    });
+  }
+}
 
 // Scene/timeline state, read by both the Instruction Builder ("Add to
 // Timeline" pushes here) and the Timeline panel (renders whatever's in
@@ -110,15 +134,20 @@ export const useSceneStore = create<SceneStore>((set, get) => {
     // it runs off the end of the array.
     deleteScene: (id) => {
       clearHoldTimer();
-      set((state) => ({
-        scenes: state.scenes.filter((scene) => scene.id !== id),
-        isPlaying: false,
-        currentSceneIndex: null,
-        currentSceneStartedAt: null,
-        // Deleting the scene currently being edited would otherwise leave
-        // editingSceneId pointing at nothing -- drop out of edit mode too.
-        editingSceneId: state.editingSceneId === id ? null : state.editingSceneId,
-      }));
+      set((state) => {
+        const removedScene = state.scenes.find((scene) => scene.id === id);
+        const remainingScenes = state.scenes.filter((scene) => scene.id !== id);
+        cleanupOrphanedUpload(remainingScenes, removedScene);
+        return {
+          scenes: remainingScenes,
+          isPlaying: false,
+          currentSceneIndex: null,
+          currentSceneStartedAt: null,
+          // Deleting the scene currently being edited would otherwise leave
+          // editingSceneId pointing at nothing -- drop out of edit mode too.
+          editingSceneId: state.editingSceneId === id ? null : state.editingSceneId,
+        };
+      });
     },
     // 6.3: jumps straight to scene N's camera+highlight state via the same
     // dispatchScene primitive playFrom uses -- no transition through
@@ -145,10 +174,12 @@ export const useSceneStore = create<SceneStore>((set, get) => {
     },
     editingSceneId: null,
     updateScene: (id, scene) =>
-      set((state) => ({
-        scenes: state.scenes.map((s) => (s.id === id ? { ...scene, id } : s)),
-        editingSceneId: null,
-      })),
+      set((state) => {
+        const oldScene = state.scenes.find((s) => s.id === id);
+        const newScenes = state.scenes.map((s) => (s.id === id ? { ...scene, id } : s));
+        cleanupOrphanedUpload(newScenes, oldScene);
+        return { scenes: newScenes, editingSceneId: null };
+      }),
     stopEditingScene: () => set({ editingSceneId: null }),
     currentSceneIndex: null,
     currentSceneStartedAt: null,

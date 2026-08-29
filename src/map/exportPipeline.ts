@@ -4,6 +4,7 @@ import { buildWorldScene, MAX_ZOOM, OCEAN_COLOR, type WorldScene } from "./world
 import { resolveAt, timelineDuration } from "./timelineResolver";
 import { defaultSelectionColor } from "./mapColors";
 import { loadFlagTexture } from "./flags";
+import { loadUploadedImageTexture } from "./uploadedImages";
 import type { Scene } from "./scenes";
 import type { Entity } from "./entities";
 
@@ -31,8 +32,9 @@ export function computeTotalFrames(scenes: Scene[], fps: number): number {
 
 // Export renders synchronously frame-by-frame (renderFrame below), so it
 // can't tolerate the live path's "draw color, upgrade to texture once
-// loaded" race (worldRenderer.ts's drawHighlights) -- every flag any scene
-// might use has to already be cached before the frame loop starts.
+// loaded" race (worldRenderer.ts's drawHighlights) -- every flag/uploaded
+// image any scene might use has to already be cached before the frame
+// loop starts.
 function collectFlagCodes(scenes: Scene[]): string[] {
   const codes = new Set<string>();
   for (const scene of scenes) {
@@ -43,6 +45,18 @@ function collectFlagCodes(scenes: Scene[]): string[] {
     }
   }
   return [...codes];
+}
+
+function collectUploadedImageIds(scenes: Scene[]): string[] {
+  const ids = new Set<string>();
+  for (const scene of scenes) {
+    for (const action of scene.actions) {
+      if (action.type === "highlight" && typeof action.params.uploadedImageId === "string") {
+        ids.add(action.params.uploadedImageId);
+      }
+    }
+  }
+  return [...ids];
 }
 
 export interface RunExportLoopOptions {
@@ -128,6 +142,7 @@ export async function runExport(
 
   const { app, scene } = await buildExportRenderer(width, height);
   await Promise.all(collectFlagCodes(scenes).map(loadFlagTexture));
+  await Promise.all(collectUploadedImageIds(scenes).map(loadUploadedImageTexture));
   let cancelled = false;
 
   const renderFrame = (t: number): Uint8Array => {
@@ -150,6 +165,9 @@ export async function runExport(
       fillMode: resolved.highlightFillMode,
       flagOffsetX: resolved.highlightFlagOffsetX,
       flagOffsetY: resolved.highlightFlagOffsetY,
+      flagScale: resolved.highlightFlagScale,
+      imageSource: resolved.highlightImageSource,
+      uploadedImageId: resolved.highlightUploadedImageId,
     });
     scene.applyCamera(resolved.camera, showStateBorders);
     app.renderer.render(app.stage);

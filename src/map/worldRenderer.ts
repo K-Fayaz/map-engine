@@ -29,13 +29,14 @@ import {
 import type { Camera } from "./camera";
 import { colorForCountry, oceanColor, defaultSelectionColor } from "./mapColors";
 import { cachedFlagTexture, loadFlagTexture } from "./flags";
+import { cachedUploadedImageTexture, loadUploadedImageTexture } from "./uploadedImages";
 
 // A scene highlight's fill, as resolved by whichever consumer is calling
 // drawHighlights (MapCanvas.tsx's live path, exportPipeline.ts). `fillMode`
 // is last-edit-wins per-scene state (see scenes.ts) -- "image" only takes
-// effect when `flagCode` is set AND its texture is already cached; an
-// uncached texture (or fillMode "color") falls back to `color`, same as
-// today's plain color highlight.
+// effect when `imageSource` says which of `flagCode`/`uploadedImageId` to
+// use AND its texture is already cached; an uncached texture (or fillMode
+// "color") falls back to `color`, same as today's plain color highlight.
 export interface HighlightFill {
   color: number;
   flagCode: string | null;
@@ -46,6 +47,15 @@ export interface HighlightFill {
   // fill's original, unadjusted position.
   flagOffsetX: number;
   flagOffsetY: number;
+  // Zoom on top of the automatic contain-fit size (render.ts's
+  // fillGeometryTexture) -- 1 is that fit's own size, unaffected. The
+  // Instruction Builder's Scale slider.
+  flagScale: number;
+  // Which image source "image" mode resolves to -- a bundled flag or a
+  // user-uploaded image (uploadedImages.ts). The two are mutually
+  // exclusive by construction (see scenes.ts/InstructionBuilder.tsx).
+  imageSource: "flag" | "upload" | null;
+  uploadedImageId: string | null;
 }
 
 const DEFAULT_HIGHLIGHT_FILL: HighlightFill = {
@@ -54,6 +64,9 @@ const DEFAULT_HIGHLIGHT_FILL: HighlightFill = {
   fillMode: "color",
   flagOffsetX: 0,
   flagOffsetY: 0,
+  flagScale: 1,
+  imageSource: null,
+  uploadedImageId: null,
 };
 
 // The scene-graph construction, highlight drawing, and camera-application
@@ -415,22 +428,52 @@ export function buildWorldScene(screenWidth: number, screenHeight: number): Worl
         continue;
       }
       const geometry = selected.geometry as AreaGeometry;
-      const texture = fill.fillMode === "image" && fill.flagCode ? cachedFlagTexture(fill.flagCode) : undefined;
+      const useUpload = fill.fillMode === "image" && fill.imageSource === "upload" && fill.uploadedImageId;
+      const useFlag = fill.fillMode === "image" && fill.imageSource === "flag" && fill.flagCode;
+      const texture = useUpload
+        ? cachedUploadedImageTexture(fill.uploadedImageId!)
+        : useFlag
+          ? cachedFlagTexture(fill.flagCode!)
+          : undefined;
       if (texture) {
-        fillGeometryTexture(selectionGraphic, geometry, texture, fill.flagOffsetX, fill.flagOffsetY);
+        fillGeometryTexture(
+          selectionGraphic,
+          geometry,
+          texture,
+          fill.flagOffsetX,
+          fill.flagOffsetY,
+          fill.flagScale,
+        );
       } else {
         fillGeometry(selectionGraphic, geometry, fill.color, SELECTION_FILL_ALPHA);
         // Texture not loaded yet (or export hasn't preloaded it) -- draw the
         // color fallback now, kick off the load, and redraw with the same
-        // args once it resolves. Export always preloads every flag it needs
-        // before its frame loop starts (exportPipeline.ts), so this path is
-        // live-preview-only in practice; a redraw firing between two export
-        // frames would just be a no-op re-render of the same cached state.
-        if (fill.fillMode === "image" && fill.flagCode) {
-          loadFlagTexture(fill.flagCode).then(() => {
-            if (destroyed) return;
-            drawHighlights(selectedEntityIds, hoveredEntityId, fill);
-          });
+        // args once it resolves. Export always preloads every flag/upload it
+        // needs before its frame loop starts (exportPipeline.ts), so this
+        // path is live-preview-only in practice; a redraw firing between two
+        // export frames would just be a no-op re-render of the same cached
+        // state. `.catch()` is required, not optional -- a load failure
+        // (corrupt file, undecodable format) must never become an unhandled
+        // rejection or silently retry forever; the color fallback already
+        // drawn above just stays as the visible result.
+        if (useUpload) {
+          loadUploadedImageTexture(fill.uploadedImageId!)
+            .then(() => {
+              if (destroyed) return;
+              drawHighlights(selectedEntityIds, hoveredEntityId, fill);
+            })
+            .catch((err) => {
+              console.error(`Failed to load uploaded highlight image ${fill.uploadedImageId}:`, err);
+            });
+        } else if (useFlag) {
+          loadFlagTexture(fill.flagCode!)
+            .then(() => {
+              if (destroyed) return;
+              drawHighlights(selectedEntityIds, hoveredEntityId, fill);
+            })
+            .catch((err) => {
+              console.error(`Failed to load flag texture ${fill.flagCode}:`, err);
+            });
         }
       }
       strokeGeometry(selectionGraphic, geometry, fill.color);

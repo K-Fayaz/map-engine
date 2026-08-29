@@ -398,6 +398,9 @@ export function MapCanvas() {
             selectedFillMode,
             selectedFlagOffsetX,
             selectedFlagOffsetY,
+            selectedFlagScale,
+            selectedImageSource,
+            selectedUploadedImageId,
           } = interactionStore.getState();
           scene.drawHighlights(selectedEntityIds, hoveredEntityId, {
             color: selectedColor ?? defaultSelectionColor,
@@ -405,6 +408,9 @@ export function MapCanvas() {
             fillMode: selectedFillMode,
             flagOffsetX: selectedFlagOffsetX,
             flagOffsetY: selectedFlagOffsetY,
+            flagScale: selectedFlagScale,
+            imageSource: selectedImageSource,
+            uploadedImageId: selectedUploadedImageId,
           });
         };
         unsubscribeInteraction = interactionStore.subscribe(redrawHighlights);

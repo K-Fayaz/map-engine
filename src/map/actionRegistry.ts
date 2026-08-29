@@ -134,7 +134,19 @@ registerAction("highlight", (params, _durationSeconds, _cameraStart) => {
   const fillMode = params.fillMode as "color" | "image" | undefined;
   const flagOffsetX = params.flagOffsetX as number | undefined;
   const flagOffsetY = params.flagOffsetY as number | undefined;
-  interactionStore.toggleEntity(entityId, false, { color, flagCode, fillMode, flagOffsetX, flagOffsetY });
+  const imageSource = (params.imageSource as "flag" | "upload" | null | undefined) ?? undefined;
+  const uploadedImageId = (params.uploadedImageId as string | null | undefined) ?? undefined;
+  const flagScale = params.flagScale as number | undefined;
+  interactionStore.toggleEntity(entityId, false, {
+    color,
+    flagCode,
+    fillMode,
+    flagOffsetX,
+    flagOffsetY,
+    imageSource,
+    uploadedImageId,
+    flagScale,
+  });
 });
 
 // "clearHighlight": clears the whole selection rather than removing only

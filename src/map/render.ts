@@ -238,23 +238,37 @@ export function fillGeometry(
 // them -- an acceptable simplification, not a broken result (each piece
 // still shows a correctly cropped, undistorted-relative-to-itself flag).
 //
-// `offsetX`/`offsetY` (each a fraction of the ring's own projected
-// bounding box, e.g. 0.1 = 10% of its width/height) pan which part of the
-// texture shows through that same fixed silhouette -- the Instruction
-// Builder's two position sliders. Pixi's `textureSpace: "local"` fill
-// derives its UV mapping as `(worldPoint - boundsMin) / boundsSize`
-// (verified against pixi.js's own generateTextureFillMatrix); supplying a
-// `matrix` translates the *input* to that mapping before it's applied, so
-// translating by `-offsetX * boundsWidth` shifts the resulting UV by
-// `+offsetX` -- computed per-ring/piece from that piece's own `points`
-// (same coordinate space Pixi's internal bounds computation would use),
-// not a single shared bounds for the whole (possibly multi-piece) entity.
+// `offsetX`/`offsetY` (each a fraction of the ring's own bounding box, e.g.
+// 0.1 = 10% of its width/height) pan which part of the texture shows
+// through that same fixed silhouette -- the Instruction Builder's two
+// position sliders. `scale` (1 = the default stretch-fill, unaffected)
+// zooms in/out around the same center before that pan is applied -- the
+// Instruction Builder's Scale slider; >1 crops in tighter, <1 shrinks the
+// image with more of the silhouette showing whatever's outside the sampled
+// UV range (Pixi forces `repeat` addressing for any non-gradient texture
+// fill, so that's a tiled repeat of the image's own edge pixels, not a
+// blank gap).
+//
+// Pixi's `textureSpace: "local"` fill derives its UV mapping as
+// `finalUV = invert(matrix)(normalizedLocalUV)`, where normalizedLocalUV is
+// `(worldPoint - boundsMin) / boundsSize` computed automatically from the
+// shape's own bounds (verified by expanding pixi.js's own
+// generateTextureFillMatrix term by term) -- so the `matrix` this function
+// supplies operates on that already-normalized `[0,1]` coordinate, not on
+// raw world/pixel units. `k = 1/scale` uniformly scales that coordinate
+// around its own center (0.5), and the offset is folded into the same
+// translate term (`(1-k)/2 - offset*k`) rather than added separately, so
+// panning always happens *after* the zoom, not before it. No bounds/point
+// scanning needed here -- unlike some of this module's other per-ring
+// math, this transform is expressed entirely in normalized units, so it's
+// identical regardless of the ring's actual pixel size.
 export function fillGeometryTexture(
   graphics: Graphics,
   geometry: AreaGeometry,
   texture: Texture,
   offsetX: number = 0,
   offsetY: number = 0,
+  scale: number = 1,
 ) {
   for (const rings of toPolygons(geometry)) {
     const realRings = rings.filter((ring) => !isPolarClosureRing(ring));
@@ -264,20 +278,13 @@ export function fillGeometryTexture(
         const points = projectPoints(piece);
         graphics.poly(points, true);
         if (ringIndex === 0) {
-          if (offsetX === 0 && offsetY === 0) {
+          if (offsetX === 0 && offsetY === 0 && scale === 1) {
             graphics.fill({ texture, textureSpace: "local" });
           } else {
-            let minX = Infinity;
-            let maxX = -Infinity;
-            let minY = Infinity;
-            let maxY = -Infinity;
-            for (let i = 0; i < points.length; i += 2) {
-              minX = Math.min(minX, points[i]);
-              maxX = Math.max(maxX, points[i]);
-              minY = Math.min(minY, points[i + 1]);
-              maxY = Math.max(maxY, points[i + 1]);
-            }
-            const matrix = new Matrix().translate(-offsetX * (maxX - minX), -offsetY * (maxY - minY));
+            const k = 1 / scale;
+            const cX = (1 - k) / 2 - offsetX * k;
+            const cY = (1 - k) / 2 - offsetY * k;
+            const matrix = new Matrix(k, 0, 0, k, cX, cY).invert();
             graphics.fill({ texture, matrix, textureSpace: "local" });
           }
         } else {

@@ -34,6 +34,9 @@ export interface ResolvedState {
   highlightFillMode: "color" | "image";
   highlightFlagOffsetX: number;
   highlightFlagOffsetY: number;
+  highlightFlagScale: number;
+  highlightImageSource: "flag" | "upload" | null;
+  highlightUploadedImageId: string | null;
 }
 
 // Sum of every scene's duration -- the export loop's `totalFrames = ceil(
@@ -108,6 +111,9 @@ interface PerSceneState {
   highlightFillMode: "color" | "image";
   highlightFlagOffsetX: number;
   highlightFlagOffsetY: number;
+  highlightFlagScale: number;
+  highlightImageSource: "flag" | "upload" | null;
+  highlightUploadedImageId: string | null;
 }
 
 // One O(scenes) pass building each scene's start/end camera and the
@@ -136,6 +142,9 @@ function buildPerSceneTable(
   let currentHighlightFillMode: "color" | "image" = "color";
   let currentHighlightFlagOffsetX = 0;
   let currentHighlightFlagOffsetY = 0;
+  let currentHighlightFlagScale = 1;
+  let currentHighlightImageSource: "flag" | "upload" | null = null;
+  let currentHighlightUploadedImageId: string | null = null;
 
   for (const scene of scenes) {
     const resolvedTarget = resolveSceneTargetCamera(
@@ -174,6 +183,13 @@ function buildPerSceneTable(
           typeof action.params.flagOffsetX === "number" ? action.params.flagOffsetX : 0;
         currentHighlightFlagOffsetY =
           typeof action.params.flagOffsetY === "number" ? action.params.flagOffsetY : 0;
+        currentHighlightImageSource =
+          action.params.imageSource === "flag" || action.params.imageSource === "upload"
+            ? action.params.imageSource
+            : null;
+        currentHighlightUploadedImageId =
+          typeof action.params.uploadedImageId === "string" ? action.params.uploadedImageId : null;
+        currentHighlightFlagScale = typeof action.params.flagScale === "number" ? action.params.flagScale : 1;
       } else if (action.type === "clearHighlight") {
         currentHighlight = null;
         currentHighlightColor = null;
@@ -181,6 +197,9 @@ function buildPerSceneTable(
         currentHighlightFillMode = "color";
         currentHighlightFlagOffsetX = 0;
         currentHighlightFlagOffsetY = 0;
+        currentHighlightFlagScale = 1;
+        currentHighlightImageSource = null;
+        currentHighlightUploadedImageId = null;
       }
     }
 
@@ -195,6 +214,9 @@ function buildPerSceneTable(
       highlightFillMode: currentHighlightFillMode,
       highlightFlagOffsetX: currentHighlightFlagOffsetX,
       highlightFlagOffsetY: currentHighlightFlagOffsetY,
+      highlightFlagScale: currentHighlightFlagScale,
+      highlightImageSource: currentHighlightImageSource,
+      highlightUploadedImageId: currentHighlightUploadedImageId,
     });
 
     previousCamera = to;
@@ -230,6 +252,9 @@ export function resolveAt(
       highlightFillMode: "color",
       highlightFlagOffsetX: 0,
       highlightFlagOffsetY: 0,
+      highlightFlagScale: 1,
+      highlightImageSource: null,
+      highlightUploadedImageId: null,
     };
   }
 
@@ -278,5 +303,8 @@ export function resolveAt(
     highlightFillMode: scene.highlightFillMode,
     highlightFlagOffsetX: scene.highlightFlagOffsetX,
     highlightFlagOffsetY: scene.highlightFlagOffsetY,
+    highlightFlagScale: scene.highlightFlagScale,
+    highlightImageSource: scene.highlightImageSource,
+    highlightUploadedImageId: scene.highlightUploadedImageId,
   };
 }

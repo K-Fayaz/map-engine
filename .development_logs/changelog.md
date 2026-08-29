@@ -5,6 +5,167 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-29 — Upload a custom image as a highlight fill, plus a Scale slider
+
+### Summary
+Follow-up to the flag-image highlight feature: the user wanted a third
+image source alongside color and bundled flags -- their own uploaded
+image, no file-type or size restriction. Discussed and confirmed up front
+that an uploaded file should be copied into an app-owned folder (this is a
+fully offline Tauri app, no `http` capability, so an uploaded file can't
+just be referenced by its original path -- that path could move or be
+deleted later) and deleted again once no scene references it anymore (the
+user's explicit scope: "delete if the scene using it is deleted, for
+now" -- a full reference-counted/project-aware cleanup story is deferred
+until real project save/load exists). Planned via `EnterPlanMode` before
+implementation, reusing the same seven-file pipeline the flag feature
+already established, plus three genuinely new pieces: a Tauri fs
+capability grant, a copy-on-upload/delete-on-orphan flow, and a new
+`imageSource: "flag" | "upload" | null` discriminator (previously
+`flagCode` being set was the only signal "image" mode meant a flag; a
+second source needs an explicit flag rather than an implicit null-check).
+
+**Uploading froze the whole app.** Confirmed working in the real Tauri app
+(thumbnail showed, `Add to Timeline` etc.), but the console showed a Pixi
+warning ("[Assets] blob:... could not be loaded as we don't know how to
+parse it") and the UI became completely unresponsive to clicks (cursor
+still moved -- the OS compositor -- but nothing in the page reacted).
+Diagnosed two compounding bugs: (1) the uploaded file's `Blob` had no MIME
+type, so neither the `<img>` thumbnail nor Pixi's `Assets.load` (which
+picks a parser from a URL's file extension -- `blob:` URLs never have one)
+could ever have worked; (2) the failed load's promise never cleared itself
+from the in-memory cache except on the success path, so every future
+attempt for that same image kept returning the same permanently-stuck
+promise -- combined with `drawHighlights` re-firing on nearly every
+hover/pointer-move, that's what froze the tab. Fixed by decoding via a
+plain `HTMLImageElement` instead of `Assets.load` (bypassing Pixi's
+extension-based parser resolution entirely, which was never going to work
+for a blob URL no matter the MIME type) and moving the cache cleanup into
+a `.finally()` so a failure can't wedge future attempts. Also added a real
+MIME type (inferred from the file's extension) for the thumbnail, and
+`.catch()` handling around both the upload and flag load-then-redraw
+chains in `worldRenderer.ts` so a future failure logs an error instead of
+risking another silent hang.
+
+**Scale slider, and the contain-fit revert.** User asked for a third
+slider alongside the existing Horizontal/Vertical position ones -- a zoom
+on the image within the entity's silhouette. While implementing, found
+that the earlier "contain fit" fix (the one that stopped India's Ashoka
+Chakra from rendering as a squished ellipse, from the 2026-08-28 entry
+below) was no longer present in `render.ts` -- checked git history to
+confirm it was never actually committed. The user clarified they'd
+deliberately stashed it and asked not to worry about it for now, so it
+was left reverted rather than reintroduced. Building the Scale slider on
+top of the plain stretch-fill model (not contain-fit) required re-deriving
+the offset/scale matrix math from scratch, which surfaced a real units bug
+in the *existing* offset-only implementation: the old code translated by
+`offsetX * boundsWidth` (raw pixel units) before Pixi's own local-space
+UV normalization, which -- expanding pixi.js's `generateTextureMatrix`
+term by term -- doesn't compose correctly; the corrected version works
+entirely in normalized `[0,1]` UV units, which is also what let `scale`
+combine into the same single matrix. Not empirically re-verified in a
+live render this session (the `chrome-devtools` testing session hit a
+pre-existing headless-Chrome WebGL limitation where the canvas stops
+responding to redraws after first paint, unrelated to this change) --
+flagged explicitly to the user as needing a check in the real app,
+same as the still-open verification from the freeze fix above.
+
+### Changes
+
+**`src-tauri/capabilities/default.json`**
+- Added `fs:allow-appdata-read-recursive`/`fs:allow-appdata-write-recursive`
+  -- `fs:default` alone grants no static scope, and the dialog plugin's
+  automatic per-pick grant only covers the file the user just chose, not
+  writing to or reading back from the app data directory.
+
+**New `src/map/uploadedImages.ts`** (mirrors `flags.ts`'s role)
+- `pickAndStoreUploadImage` -- native picker with no `filters` (no
+  type/size restriction), copies bytes into
+  `$APPDATA/highlight-images/<generated-id>`.
+- `loadUploadedImageTexture`/`cachedUploadedImageTexture` -- same
+  cache-then-load shape as `flags.ts`, decoding via `HTMLImageElement` +
+  `Texture.from` (see the freeze-bug fix above), with the cache-clearing
+  `.finally()`.
+- `loadUploadedImagePreviewUrl`/`cachedUploadedImagePreviewUrl` -- a
+  shared blob-URL cache, with a real inferred MIME type, for the
+  Instruction Builder's `<img>` thumbnail.
+- `deleteUploadedImage` -- removes the app-data copy and both in-memory
+  caches; called from `sceneStore.ts`.
+
+**`src/map/sceneStore.ts`**
+- `deleteScene`/`updateScene` now call a shared `cleanupOrphanedUpload`
+  helper: if the removed/replaced scene's highlight had an uploaded image,
+  and no *other* scene still references that same id, delete its file.
+
+**`imageSource: "flag" | "upload" | null` and `flagScale: number`** added
+alongside the existing `flagCode`/`uploadedImageId`/`flagOffsetX`/
+`flagOffsetY` everywhere the pipeline already threaded those --
+`scenes.ts`, `actionRegistry.ts`, `interactionStore.ts`,
+`timelineResolver.ts`, `exportPipeline.ts` (preloading every uploaded
+image before the frame loop starts, same as flags), `worldRenderer.ts`'s
+`HighlightFill`/`drawHighlights` (resolves the texture by branching on
+`imageSource` now, instead of an implicit "flagCode is set" check; also
+gained `.catch()` handling on both load chains), `MapCanvas.tsx`.
+
+**`src/map/render.ts`**
+- `fillGeometryTexture` gained a `scale` param (1 = unadjusted). The
+  matrix combining `offsetX`/`offsetY`/`scale` is now derived entirely in
+  normalized `[0,1]` UV units (`k = 1/scale`, translate term
+  `(1-k)/2 - offset*k`) -- fixing the pre-existing units bug described
+  above, not just adding scale.
+- The "contain fit" (aspect-ratio-preserving) version from 2026-08-28 is
+  reverted -- back to Pixi's default independent-axis stretch, per the
+  user's explicit "stash it for now."
+
+**`src/map/InstructionBuilder.tsx`**
+- New "Highlight Image" section (above "Highlight Color", per the user's
+  request) -- an "Upload Image" button, thumbnail preview, inline error
+  display (try/catch around the upload call, same pattern as
+  `audioStore.ts`'s `pickAudioFile` -- a real failure must never surface
+  as an unhandled rejection).
+- A `highlightOptions()` helper now bundles the growing highlight-fill
+  state (7 fields) for `interactionStore.toggleEntity` calls, replacing
+  what had become five near-duplicate object literals across the
+  color/flag/upload/position handlers.
+- New "Scale" slider (50%-200%, default 100%) below the existing
+  Horizontal/Vertical ones.
+
+### Decisions
+- **Orphan cleanup on scene delete/update only, not a full reference-count
+  system.** User's explicit scope, with an acknowledged gap: an uploaded
+  image that's previewed but never added to the timeline (or removed
+  before adding) has no scene to ever trigger its deletion, and leaks.
+  Logged as a known gap, not fixed -- matches the user's own "for now"
+  framing pending real projects.
+- **No file-type/size restriction on uploads.** User's explicit call.
+- **Decode uploaded images via `HTMLImageElement`, not Pixi's
+  `Assets.load`.** `Assets.load`'s parser resolution is extension-based and
+  can never work for a `blob:` URL regardless of MIME type -- confirmed by
+  reading Pixi's loader source, not just patching symptoms.
+- **`imageSource` as an explicit discriminator, not an implicit
+  null-check.** With two image sources now possible, inferring "which one"
+  from "which id happens to be set" was judged too fragile going forward.
+- **Contain-fit fix left reverted (stashed by the user), Scale slider
+  built on the plain stretch-fill model instead.** Not re-litigated --
+  the user's explicit instruction mid-session.
+
+### Deferred / not yet implemented
+- **Visual correctness of the corrected offset/scale math is unverified
+  this session.** Typecheck and the existing 22 tests pass; the
+  `chrome-devtools` session used for earlier features hit a WebGL
+  limitation (redraws after first paint don't visually apply, in headless
+  Chrome specifically) that made live confirmation impossible here. User
+  asked to check both the position sliders (whose underlying units
+  changed, which could shift how existing saved offsets render) and the
+  new Scale slider in the real app.
+- Uploaded-image orphan leak for never-added/removed-before-adding
+  previews (see Decisions above).
+- No re-audit of the antimeridian-split multi-piece case (Russia, Fiji)
+  under the corrected offset/scale math -- carried over unchanged from
+  the flag feature's own accepted simplification.
+
+---
+
 ## 2026-08-29 — Pan/Highlight camera-framing fix for exclave-bearing countries
 
 ### Summary

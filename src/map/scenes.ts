@@ -104,6 +104,9 @@ export function buildScene(
   fillMode: "color" | "image" = "color",
   flagOffsetX: number = 0,
   flagOffsetY: number = 0,
+  imageSource: "flag" | "upload" | null = null,
+  uploadedImageId: string | null = null,
+  flagScale: number = 1,
 ): Scene | null {
   if (animationRequiresEntity(animation) && !entity) return null;
 
@@ -123,7 +126,17 @@ export function buildScene(
   if (animation === "highlight") {
     actions.push({
       type: "highlight",
-      params: { entityId: entity!.id, color, flagCode, fillMode, flagOffsetX, flagOffsetY },
+      params: {
+        entityId: entity!.id,
+        color,
+        flagCode,
+        fillMode,
+        flagOffsetX,
+        flagOffsetY,
+        imageSource,
+        uploadedImageId,
+        flagScale,
+      },
     });
   }
   if (animation === "clearHighlight") {
@@ -214,6 +227,29 @@ export function sceneHighlightFlagOffsetY(scene: Scene): number {
   const highlight = scene.actions.find((action) => action.type === "highlight");
   const value = highlight?.params.flagOffsetY;
   return typeof value === "number" ? value : 0;
+}
+
+// Which image source "image" mode currently resolves to -- a flag or a
+// user-uploaded image (see uploadedImages.ts). `null` for scenes saved
+// before uploads existed, or where fillMode is still "color".
+export function sceneHighlightImageSource(scene: Scene): "flag" | "upload" | null {
+  const highlight = scene.actions.find((action) => action.type === "highlight");
+  const value = highlight?.params.imageSource;
+  return value === "flag" || value === "upload" ? value : null;
+}
+
+export function sceneHighlightUploadedImageId(scene: Scene): string | null {
+  const highlight = scene.actions.find((action) => action.type === "highlight");
+  const value = highlight?.params.uploadedImageId;
+  return typeof value === "string" ? value : null;
+}
+
+// Same reverse-mapping pattern, for the Scale slider. 1 (the automatic fit,
+// unadjusted) for scenes saved before this existed.
+export function sceneHighlightFlagScale(scene: Scene): number {
+  const highlight = scene.actions.find((action) => action.type === "highlight");
+  const value = highlight?.params.flagScale;
+  return typeof value === "number" ? value : 1;
 }
 
 export function describeAnimation(scene: Scene): string {

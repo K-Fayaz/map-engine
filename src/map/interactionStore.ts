@@ -31,6 +31,14 @@ interface InteractionState {
   // to pan the flag image within its silhouette. 0 = centered/unadjusted.
   selectedFlagOffsetX: number;
   selectedFlagOffsetY: number;
+  // Zoom on top of the automatic fit -- Instruction Builder's Scale slider.
+  // 1 = unadjusted.
+  selectedFlagScale: number;
+  // Which image source is active, when selectedFillMode === "image" --
+  // a bundled flag or a user-uploaded image (uploadedImages.ts). `null`
+  // whenever fillMode is "color", or nothing's ever been picked.
+  selectedImageSource: "flag" | "upload" | null;
+  selectedUploadedImageId: string | null;
   hoveredEntityId: string | null;
   // Manual override for state (sub-country) border visibility, set from the
   // Instruction Builder. `true` (default) leaves today's behavior alone --
@@ -76,6 +84,9 @@ function createInteractionStore() {
     selectedFillMode: "color",
     selectedFlagOffsetX: 0,
     selectedFlagOffsetY: 0,
+    selectedFlagScale: 1,
+    selectedImageSource: null,
+    selectedUploadedImageId: null,
     hoveredEntityId: null,
     showStateBorders: true,
   };
@@ -132,6 +143,9 @@ function createInteractionStore() {
         fillMode?: "color" | "image";
         flagOffsetX?: number;
         flagOffsetY?: number;
+        flagScale?: number;
+        imageSource?: "flag" | "upload";
+        uploadedImageId?: string;
       },
     ) {
       if (id === null) {
@@ -144,6 +158,9 @@ function createInteractionStore() {
           selectedFillMode: "color",
           selectedFlagOffsetX: 0,
           selectedFlagOffsetY: 0,
+          selectedFlagScale: 1,
+          selectedImageSource: null,
+          selectedUploadedImageId: null,
         };
         emit();
         return;
@@ -155,6 +172,9 @@ function createInteractionStore() {
         const fillMode = highlight?.fillMode ?? "color";
         const flagOffsetX = highlight?.flagOffsetX ?? 0;
         const flagOffsetY = highlight?.flagOffsetY ?? 0;
+        const flagScale = highlight?.flagScale ?? 1;
+        const imageSource = highlight?.imageSource ?? null;
+        const uploadedImageId = highlight?.uploadedImageId ?? null;
         if (
           state.selectedEntityIds.size === 1 &&
           state.selectedEntityIds.has(id) &&
@@ -162,7 +182,10 @@ function createInteractionStore() {
           state.selectedFlagCode === flagCode &&
           state.selectedFillMode === fillMode &&
           state.selectedFlagOffsetX === flagOffsetX &&
-          state.selectedFlagOffsetY === flagOffsetY
+          state.selectedFlagOffsetY === flagOffsetY &&
+          state.selectedFlagScale === flagScale &&
+          state.selectedImageSource === imageSource &&
+          state.selectedUploadedImageId === uploadedImageId
         )
           return;
         state = {
@@ -173,6 +196,9 @@ function createInteractionStore() {
           selectedFillMode: fillMode,
           selectedFlagOffsetX: flagOffsetX,
           selectedFlagOffsetY: flagOffsetY,
+          selectedFlagScale: flagScale,
+          selectedImageSource: imageSource,
+          selectedUploadedImageId: uploadedImageId,
         };
         emit();
         return;
@@ -192,6 +218,9 @@ function createInteractionStore() {
         selectedFillMode: "color",
         selectedFlagOffsetX: 0,
         selectedFlagOffsetY: 0,
+        selectedFlagScale: 1,
+        selectedImageSource: null,
+        selectedUploadedImageId: null,
       };
       emit();
     },
