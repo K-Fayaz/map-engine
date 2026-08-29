@@ -106,7 +106,9 @@ export function buildScene(
   flagOffsetY: number = 0,
   imageSource: "flag" | "upload" | null = null,
   uploadedImageId: string | null = null,
-  flagScale: number = 1,
+  uploadOffsetX: number = 0,
+  uploadOffsetY: number = 0,
+  uploadScale: number = 1,
 ): Scene | null {
   if (animationRequiresEntity(animation) && !entity) return null;
 
@@ -135,7 +137,9 @@ export function buildScene(
         flagOffsetY,
         imageSource,
         uploadedImageId,
-        flagScale,
+        uploadOffsetX,
+        uploadOffsetY,
+        uploadScale,
       },
     });
   }
@@ -244,11 +248,23 @@ export function sceneHighlightUploadedImageId(scene: Scene): string | null {
   return typeof value === "string" ? value : null;
 }
 
-// Same reverse-mapping pattern, for the Scale slider. 1 (the automatic fit,
-// unadjusted) for scenes saved before this existed.
-export function sceneHighlightFlagScale(scene: Scene): number {
+// Uploaded image's own Image Position/Scale -- independent of
+// sceneHighlightFlagOffsetX/Y above, same reverse-mapping pattern.
+export function sceneHighlightUploadOffsetX(scene: Scene): number {
   const highlight = scene.actions.find((action) => action.type === "highlight");
-  const value = highlight?.params.flagScale;
+  const value = highlight?.params.uploadOffsetX;
+  return typeof value === "number" ? value : 0;
+}
+
+export function sceneHighlightUploadOffsetY(scene: Scene): number {
+  const highlight = scene.actions.find((action) => action.type === "highlight");
+  const value = highlight?.params.uploadOffsetY;
+  return typeof value === "number" ? value : 0;
+}
+
+export function sceneHighlightUploadScale(scene: Scene): number {
+  const highlight = scene.actions.find((action) => action.type === "highlight");
+  const value = highlight?.params.uploadScale;
   return typeof value === "number" ? value : 1;
 }
 

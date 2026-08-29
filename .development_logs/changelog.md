@@ -5,6 +5,95 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-08-29 — Split flag vs. upload position controls; fixed a real slider regression
+
+### Summary
+Follow-up to the same day's Scale-slider work. The Scale slider had been
+added to the *same* Horizontal/Vertical/Scale control set already shared
+by both flags and uploaded images -- the user pushed back hard: flags and
+uploaded images needed **two entirely separate sets of controls**, not
+one shared set. Flags should keep exactly the two sliders (Horizontal/
+Vertical, no Scale) they had before Scale was ever introduced; uploaded
+images get their own independent Horizontal/Vertical/Scale, sharing no
+state with the flag ones.
+
+While verifying the split, the user reported the flag position sliders
+themselves now behaved differently than before -- dragging Horizontal to
+its minimum no longer centered/behaved the way it used to. Initially
+suspected stale state or a stale dev bundle; the user restarted the app
+and confirmed it still looked wrong, so this was a real regression, not a
+caching artifact. Root cause: this same day's earlier Scale-slider work
+had rewritten `fillGeometryTexture`'s offset math from the original plain
+pixel-multiplied translate into a normalized-`[0,1]` formula (framed at
+the time as "fixing a units bug") -- correct in isolation, but it
+silently changed the flags' actual on-screen sensitivity/feel from what
+the user had already tested and accepted. Fixed by keeping the *original*
+formula verbatim for the `scale === 1` case (which is always true for
+flags, since flags have no Scale control at all) and reserving the new
+normalized-unit formula for the `scale !== 1` case (upload-only, since
+Scale is new there with no prior behavior to preserve). Confirmed via a
+side-by-side headless-browser comparison (fresh reload, baseline
+screenshot vs. slider-at-minimum screenshot) that the reverted formula
+produces the originally-shipped subtle nudge, not the newer, larger shift.
+
+### Changes
+
+**`src/map/render.ts`**
+- `fillGeometryTexture` now branches on `scale === 1` before deciding
+  which matrix formula to use: the exact original plain-translate formula
+  (unchanged, bit-for-bit) when `scale === 1`, the newer normalized
+  `k = 1/scale` formula only when `scale !== 1`. Both still share the same
+  ring/hole/antimeridian iteration and the `offsetX === 0 && offsetY ===
+  0 && scale === 1` fast path.
+
+**`worldRenderer.ts`'s `HighlightFill` / `drawHighlights`**
+- Split into two fully independent field groups: `flagOffsetX`/
+  `flagOffsetY` (flag-only, no scale -- always passes `scale: 1` to
+  `fillGeometryTexture`) and `uploadOffsetX`/`uploadOffsetY`/
+  `uploadScale` (upload-only). `drawHighlights` picks the pair to use by
+  branching on `imageSource`, never mixing the two.
+
+**The same split threaded through the full pipeline** -- `scenes.ts`
+(`buildScene` params + `sceneHighlightUploadOffsetX/Y/Scale` readers,
+alongside the untouched `sceneHighlightFlagOffsetX/Y`), `actionRegistry.ts`,
+`interactionStore.ts` (`selectedFlagOffsetX/Y` vs. `selectedUploadOffsetX/
+Y/Scale`, both independently reset on every non-highlight path),
+`timelineResolver.ts`, `exportPipeline.ts`, `MapCanvas.tsx`.
+
+**`src/map/InstructionBuilder.tsx`**
+- "Flag Position" (Horizontal/Vertical only) stays where it was, inside
+  the Flags section, driven by the untouched `highlightFlagOffsetX/Y`
+  state.
+- New, separate "Image Position" (Horizontal/Vertical/Scale) sits inside
+  the Highlight Image section, right under the Upload Image button/
+  thumbnail, driven by new `highlightUploadOffsetX/Y/Scale` state.
+- `highlightOptions()` (the bundling helper for `interactionStore.toggleEntity`
+  calls) extended with the three upload-only fields alongside the
+  existing flag ones -- both sets always passed through together so
+  neither live-preview path ever loses the other's last value.
+
+### Decisions
+- **Two independent control sets and two independent value stores, not a
+  shared set with a Scale field that only applies sometimes.** User's
+  explicit, repeated correction -- confirmed via back-and-forth that this
+  meant fully separate state, not just a UI-level split over shared
+  values.
+- **The original flag-offset formula is now permanently pinned for
+  `scale === 1`, not replaced by the "more correct" normalized version.**
+  A real lesson from this session: a math change justified as a units
+  fix still changed a *feel* the user had already tuned and approved --
+  confirmed as an actual regression (not stale state) via a controlled
+  before/after screenshot comparison, not just re-asserted from theory.
+
+### Deferred / not yet implemented
+- The normalized-unit formula (`scale !== 1` path) still hasn't been
+  empirically verified against a real upload image's Scale slider in the
+  actual app -- only the reverted flag path was confirmed via side-by-side
+  screenshots this session. Carried over from the previous entry's same
+  open item.
+
+---
+
 ## 2026-08-29 — Upload a custom image as a highlight fill, plus a Scale slider
 
 ### Summary

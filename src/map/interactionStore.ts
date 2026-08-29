@@ -27,18 +27,22 @@ interface InteractionState {
   // is the last-edit-wins switch between them (see scenes.ts's `fillMode`).
   selectedFlagCode: string | null;
   selectedFillMode: "color" | "image";
-  // Position sliders' values -- fraction of the entity's own bounding box
-  // to pan the flag image within its silhouette. 0 = centered/unadjusted.
+  // Flag Position sliders' values -- fraction of the entity's own bounding
+  // box to pan the flag image within its silhouette. 0 = centered/
+  // unadjusted. Flags have no Scale control, and never share these with
+  // an uploaded image's own position below -- separate by design.
   selectedFlagOffsetX: number;
   selectedFlagOffsetY: number;
-  // Zoom on top of the automatic fit -- Instruction Builder's Scale slider.
-  // 1 = unadjusted.
-  selectedFlagScale: number;
   // Which image source is active, when selectedFillMode === "image" --
   // a bundled flag or a user-uploaded image (uploadedImages.ts). `null`
   // whenever fillMode is "color", or nothing's ever been picked.
   selectedImageSource: "flag" | "upload" | null;
   selectedUploadedImageId: string | null;
+  // Uploaded image's own Image Position/Scale sliders -- independent of
+  // selectedFlagOffsetX/Y above.
+  selectedUploadOffsetX: number;
+  selectedUploadOffsetY: number;
+  selectedUploadScale: number;
   hoveredEntityId: string | null;
   // Manual override for state (sub-country) border visibility, set from the
   // Instruction Builder. `true` (default) leaves today's behavior alone --
@@ -84,9 +88,11 @@ function createInteractionStore() {
     selectedFillMode: "color",
     selectedFlagOffsetX: 0,
     selectedFlagOffsetY: 0,
-    selectedFlagScale: 1,
     selectedImageSource: null,
     selectedUploadedImageId: null,
+    selectedUploadOffsetX: 0,
+    selectedUploadOffsetY: 0,
+    selectedUploadScale: 1,
     hoveredEntityId: null,
     showStateBorders: true,
   };
@@ -143,9 +149,11 @@ function createInteractionStore() {
         fillMode?: "color" | "image";
         flagOffsetX?: number;
         flagOffsetY?: number;
-        flagScale?: number;
         imageSource?: "flag" | "upload";
         uploadedImageId?: string;
+        uploadOffsetX?: number;
+        uploadOffsetY?: number;
+        uploadScale?: number;
       },
     ) {
       if (id === null) {
@@ -158,9 +166,11 @@ function createInteractionStore() {
           selectedFillMode: "color",
           selectedFlagOffsetX: 0,
           selectedFlagOffsetY: 0,
-          selectedFlagScale: 1,
           selectedImageSource: null,
           selectedUploadedImageId: null,
+          selectedUploadOffsetX: 0,
+          selectedUploadOffsetY: 0,
+          selectedUploadScale: 1,
         };
         emit();
         return;
@@ -172,9 +182,11 @@ function createInteractionStore() {
         const fillMode = highlight?.fillMode ?? "color";
         const flagOffsetX = highlight?.flagOffsetX ?? 0;
         const flagOffsetY = highlight?.flagOffsetY ?? 0;
-        const flagScale = highlight?.flagScale ?? 1;
         const imageSource = highlight?.imageSource ?? null;
         const uploadedImageId = highlight?.uploadedImageId ?? null;
+        const uploadOffsetX = highlight?.uploadOffsetX ?? 0;
+        const uploadOffsetY = highlight?.uploadOffsetY ?? 0;
+        const uploadScale = highlight?.uploadScale ?? 1;
         if (
           state.selectedEntityIds.size === 1 &&
           state.selectedEntityIds.has(id) &&
@@ -183,9 +195,11 @@ function createInteractionStore() {
           state.selectedFillMode === fillMode &&
           state.selectedFlagOffsetX === flagOffsetX &&
           state.selectedFlagOffsetY === flagOffsetY &&
-          state.selectedFlagScale === flagScale &&
           state.selectedImageSource === imageSource &&
-          state.selectedUploadedImageId === uploadedImageId
+          state.selectedUploadedImageId === uploadedImageId &&
+          state.selectedUploadOffsetX === uploadOffsetX &&
+          state.selectedUploadOffsetY === uploadOffsetY &&
+          state.selectedUploadScale === uploadScale
         )
           return;
         state = {
@@ -196,9 +210,11 @@ function createInteractionStore() {
           selectedFillMode: fillMode,
           selectedFlagOffsetX: flagOffsetX,
           selectedFlagOffsetY: flagOffsetY,
-          selectedFlagScale: flagScale,
           selectedImageSource: imageSource,
           selectedUploadedImageId: uploadedImageId,
+          selectedUploadOffsetX: uploadOffsetX,
+          selectedUploadOffsetY: uploadOffsetY,
+          selectedUploadScale: uploadScale,
         };
         emit();
         return;
@@ -218,9 +234,11 @@ function createInteractionStore() {
         selectedFillMode: "color",
         selectedFlagOffsetX: 0,
         selectedFlagOffsetY: 0,
-        selectedFlagScale: 1,
         selectedImageSource: null,
         selectedUploadedImageId: null,
+        selectedUploadOffsetX: 0,
+        selectedUploadOffsetY: 0,
+        selectedUploadScale: 1,
       };
       emit();
     },

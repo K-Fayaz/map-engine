@@ -43,19 +43,23 @@ export interface HighlightFill {
   fillMode: "color" | "image";
   // Fraction of the entity's own bounding box (e.g. 0.1 = 10% of its
   // width/height) to pan the flag image within its fixed silhouette --
-  // the Instruction Builder's position sliders. 0 (centered) is the
-  // fill's original, unadjusted position.
+  // the Instruction Builder's Flag Position sliders. 0 (centered) is the
+  // fill's original, unadjusted position. Flags have no Scale control --
+  // kept as a separate, independent pair from the upload ones below per
+  // the user's explicit "these should be separate buttons" request; a
+  // flag's own position never shares state with an uploaded image's.
   flagOffsetX: number;
   flagOffsetY: number;
-  // Zoom on top of the automatic contain-fit size (render.ts's
-  // fillGeometryTexture) -- 1 is that fit's own size, unaffected. The
-  // Instruction Builder's Scale slider.
-  flagScale: number;
   // Which image source "image" mode resolves to -- a bundled flag or a
   // user-uploaded image (uploadedImages.ts). The two are mutually
   // exclusive by construction (see scenes.ts/InstructionBuilder.tsx).
   imageSource: "flag" | "upload" | null;
   uploadedImageId: string | null;
+  // Uploaded image's own Position/Scale -- independent of flagOffsetX/Y
+  // above, the Instruction Builder's separate Image Position sliders.
+  uploadOffsetX: number;
+  uploadOffsetY: number;
+  uploadScale: number;
 }
 
 const DEFAULT_HIGHLIGHT_FILL: HighlightFill = {
@@ -64,9 +68,11 @@ const DEFAULT_HIGHLIGHT_FILL: HighlightFill = {
   fillMode: "color",
   flagOffsetX: 0,
   flagOffsetY: 0,
-  flagScale: 1,
   imageSource: null,
   uploadedImageId: null,
+  uploadOffsetX: 0,
+  uploadOffsetY: 0,
+  uploadScale: 1,
 };
 
 // The scene-graph construction, highlight drawing, and camera-application
@@ -436,14 +442,13 @@ export function buildWorldScene(screenWidth: number, screenHeight: number): Worl
           ? cachedFlagTexture(fill.flagCode!)
           : undefined;
       if (texture) {
-        fillGeometryTexture(
-          selectionGraphic,
-          geometry,
-          texture,
-          fill.flagOffsetX,
-          fill.flagOffsetY,
-          fill.flagScale,
-        );
+        // Each image source has its own independent position (and, for
+        // uploads only, scale) -- never shared between a flag and an
+        // uploaded image, per the user's explicit request.
+        const offsetX = useUpload ? fill.uploadOffsetX : fill.flagOffsetX;
+        const offsetY = useUpload ? fill.uploadOffsetY : fill.flagOffsetY;
+        const scale = useUpload ? fill.uploadScale : 1;
+        fillGeometryTexture(selectionGraphic, geometry, texture, offsetX, offsetY, scale);
       } else {
         fillGeometry(selectionGraphic, geometry, fill.color, SELECTION_FILL_ALPHA);
         // Texture not loaded yet (or export hasn't preloaded it) -- draw the

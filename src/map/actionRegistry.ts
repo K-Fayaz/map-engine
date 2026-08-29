@@ -136,7 +136,9 @@ registerAction("highlight", (params, _durationSeconds, _cameraStart) => {
   const flagOffsetY = params.flagOffsetY as number | undefined;
   const imageSource = (params.imageSource as "flag" | "upload" | null | undefined) ?? undefined;
   const uploadedImageId = (params.uploadedImageId as string | null | undefined) ?? undefined;
-  const flagScale = params.flagScale as number | undefined;
+  const uploadOffsetX = params.uploadOffsetX as number | undefined;
+  const uploadOffsetY = params.uploadOffsetY as number | undefined;
+  const uploadScale = params.uploadScale as number | undefined;
   interactionStore.toggleEntity(entityId, false, {
     color,
     flagCode,
@@ -145,7 +147,9 @@ registerAction("highlight", (params, _durationSeconds, _cameraStart) => {
     flagOffsetY,
     imageSource,
     uploadedImageId,
-    flagScale,
+    uploadOffsetX,
+    uploadOffsetY,
+    uploadScale,
   });
 });
 

@@ -165,9 +165,11 @@ export async function runExport(
       fillMode: resolved.highlightFillMode,
       flagOffsetX: resolved.highlightFlagOffsetX,
       flagOffsetY: resolved.highlightFlagOffsetY,
-      flagScale: resolved.highlightFlagScale,
       imageSource: resolved.highlightImageSource,
       uploadedImageId: resolved.highlightUploadedImageId,
+      uploadOffsetX: resolved.highlightUploadOffsetX,
+      uploadOffsetY: resolved.highlightUploadOffsetY,
+      uploadScale: resolved.highlightUploadScale,
     });
     scene.applyCamera(resolved.camera, showStateBorders);
     app.renderer.render(app.stage);

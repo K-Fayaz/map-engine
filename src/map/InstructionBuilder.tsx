@@ -13,9 +13,11 @@ import {
   sceneHighlightFlagCode,
   sceneHighlightFlagOffsetX,
   sceneHighlightFlagOffsetY,
-  sceneHighlightFlagScale,
   sceneHighlightImageSource,
   sceneHighlightUploadedImageId,
+  sceneHighlightUploadOffsetX,
+  sceneHighlightUploadOffsetY,
+  sceneHighlightUploadScale,
   sceneZoomPercent,
   type AnimationValue,
 } from "./scenes";
@@ -32,16 +34,19 @@ import {
 // Position sliders run -50..50 (full drag range, same feel as any other
 // slider) but map to a much smaller actual offset -- fillGeometryTexture's
 // offset is a fraction of the entity's own bounding box, so even 0.5 (50%)
-// panned the flag drastically for a small drag. /5000 caps the real range
+// panned the image drastically for a small drag. /5000 caps the real range
 // at +/-0.01 (1%), which reads as a fine, controllable nudge instead.
-const FLAG_OFFSET_SLIDER_SCALE = 5000;
+// Shared by both the Flag Position and Image Position sliders -- same
+// underlying fillGeometryTexture math, just fed from separate state.
+const OFFSET_SLIDER_SCALE = 5000;
 
 // Scale slider range, as a percentage -- 50% to 200%, default 100% (1x,
 // the automatic fit's own size, unaffected). Unlike the position sliders,
 // this doesn't need a sensitivity-scaling factor -- 1 slider-percent-point
-// is already a reasonably fine step for zoom.
-const FLAG_SCALE_MIN_PERCENT = 50;
-const FLAG_SCALE_MAX_PERCENT = 200;
+// is already a reasonably fine step for zoom. Upload-only -- flags have no
+// Scale control (see the Highlight Image vs. Flags sections below).
+const UPLOAD_SCALE_MIN_PERCENT = 50;
+const UPLOAD_SCALE_MAX_PERCENT = 200;
 
 // Right-panel Instruction Builder (roadmap.md Phase 6, section 3). This
 // entity picker deliberately does NOT require clicking the map -- per
@@ -79,18 +84,21 @@ export function InstructionBuilder() {
   const [highlightColor, setHighlightColor] = useState(defaultSelectionColor);
   const [highlightFlagCode, setHighlightFlagCode] = useState<string | null>(null);
   const [highlightFillMode, setHighlightFillMode] = useState<"color" | "image">("color");
-  // Position sliders' values -- fraction of the entity's own bounding box
-  // to pan the flag image within its silhouette (see render.ts's
+  // Flag Position sliders' values -- fraction of the entity's own bounding
+  // box to pan the flag image within its silhouette (see render.ts's
   // fillGeometryTexture). 0 = centered/unadjusted. These don't participate
   // in the color/image last-edit-wins switch -- they only refine the flag
-  // fill once one's already active.
+  // fill once one's already active. Flags have no Scale control, and these
+  // never share state with the upload-only fields below -- separate
+  // sliders, separate values, per the user's explicit request.
   const [highlightFlagOffsetX, setHighlightFlagOffsetX] = useState(0);
   const [highlightFlagOffsetY, setHighlightFlagOffsetY] = useState(0);
-  // Zoom on top of the automatic fit (render.ts's fillGeometryTexture) --
-  // 1 = unadjusted. Same "refines whichever fill is active" role as the
-  // offset sliders above.
-  const [highlightFlagScale, setHighlightFlagScale] = useState(1);
   const [flagQuery, setFlagQuery] = useState("");
+  // Uploaded image's own Image Position/Scale -- independent of the flag
+  // fields above.
+  const [highlightUploadOffsetX, setHighlightUploadOffsetX] = useState(0);
+  const [highlightUploadOffsetY, setHighlightUploadOffsetY] = useState(0);
+  const [highlightUploadScale, setHighlightUploadScale] = useState(1);
   // Which image mode currently resolves to -- a bundled flag or the user's
   // own upload (uploadedImages.ts) -- plus the uploaded image's id and a
   // displayable preview URL for its thumbnail (a blob URL, not persisted;
@@ -118,11 +126,13 @@ export function InstructionBuilder() {
     setHighlightFillMode(sceneHighlightFillMode(scene));
     setHighlightFlagOffsetX(sceneHighlightFlagOffsetX(scene));
     setHighlightFlagOffsetY(sceneHighlightFlagOffsetY(scene));
-    setHighlightFlagScale(sceneHighlightFlagScale(scene));
     const imageSource = sceneHighlightImageSource(scene);
     const uploadedImageId = sceneHighlightUploadedImageId(scene);
     setHighlightImageSource(imageSource);
     setHighlightUploadedImageId(uploadedImageId);
+    setHighlightUploadOffsetX(sceneHighlightUploadOffsetX(scene));
+    setHighlightUploadOffsetY(sceneHighlightUploadOffsetY(scene));
+    setHighlightUploadScale(sceneHighlightUploadScale(scene));
     if (imageSource === "upload" && uploadedImageId) {
       // Async -- the blob URL preview isn't available until its bytes are
       // read back from the app-data copy (or it's already cached from
@@ -174,7 +184,9 @@ export function InstructionBuilder() {
       highlightFlagOffsetY,
       highlightImageSource,
       highlightUploadedImageId,
-      highlightFlagScale,
+      highlightUploadOffsetX,
+      highlightUploadOffsetY,
+      highlightUploadScale,
     );
     if (!scene) return;
     if (editingSceneId) {
@@ -199,11 +211,13 @@ export function InstructionBuilder() {
     setHighlightFillMode("color");
     setHighlightFlagOffsetX(0);
     setHighlightFlagOffsetY(0);
-    setHighlightFlagScale(1);
     setFlagQuery("");
     setHighlightImageSource(null);
     setHighlightUploadedImageId(null);
     setUploadedImagePreviewUrl(null);
+    setHighlightUploadOffsetX(0);
+    setHighlightUploadOffsetY(0);
+    setHighlightUploadScale(1);
   };
 
   // Same substring search interactionStore already exposes -- no new
@@ -212,9 +226,11 @@ export function InstructionBuilder() {
 
   // Bundles current highlight-fill state into interactionStore.toggleEntity's
   // options shape, with any just-changed field overridden -- avoids
-  // repeating all seven fields at every call site below (color, flag,
-  // upload, and position-slider changes all need to pass the *other*
-  // fields through unchanged so the live preview doesn't lose them).
+  // repeating all nine fields at every call site below (color, flag,
+  // upload, and both position-slider sets all need to pass the *other*
+  // fields through unchanged so the live preview doesn't lose them). Flag
+  // and upload position/scale are separate fields throughout -- never
+  // shared, per the user's explicit request.
   const highlightOptions = (
     overrides: Partial<{
       color: number;
@@ -222,9 +238,11 @@ export function InstructionBuilder() {
       fillMode: "color" | "image";
       flagOffsetX: number;
       flagOffsetY: number;
-      flagScale: number;
       imageSource: "flag" | "upload" | null;
       uploadedImageId: string | null;
+      uploadOffsetX: number;
+      uploadOffsetY: number;
+      uploadScale: number;
     }> = {},
   ) => {
     const color = overrides.color ?? highlightColor;
@@ -232,19 +250,23 @@ export function InstructionBuilder() {
     const fillMode = overrides.fillMode ?? highlightFillMode;
     const flagOffsetX = overrides.flagOffsetX ?? highlightFlagOffsetX;
     const flagOffsetY = overrides.flagOffsetY ?? highlightFlagOffsetY;
-    const flagScale = overrides.flagScale ?? highlightFlagScale;
     const imageSource = overrides.imageSource !== undefined ? overrides.imageSource : highlightImageSource;
     const uploadedImageId =
       overrides.uploadedImageId !== undefined ? overrides.uploadedImageId : highlightUploadedImageId;
+    const uploadOffsetX = overrides.uploadOffsetX ?? highlightUploadOffsetX;
+    const uploadOffsetY = overrides.uploadOffsetY ?? highlightUploadOffsetY;
+    const uploadScale = overrides.uploadScale ?? highlightUploadScale;
     return {
       color,
       flagCode: flagCode ?? undefined,
       fillMode,
       flagOffsetX,
       flagOffsetY,
-      flagScale,
       imageSource: imageSource ?? undefined,
       uploadedImageId: uploadedImageId ?? undefined,
+      uploadOffsetX,
+      uploadOffsetY,
+      uploadScale,
     };
   };
 
@@ -368,10 +390,27 @@ export function InstructionBuilder() {
     }
   };
 
-  const changeFlagScale = (value: number) => {
-    setHighlightFlagScale(value);
+  // Uploaded image's own Image Position/Scale handlers -- same "instant
+  // feedback" pattern, but writing to the separate upload-only state above
+  // instead of the flag fields.
+  const changeUploadOffsetX = (value: number) => {
+    setHighlightUploadOffsetX(value);
     if (animation === "highlight" && selectedEntity) {
-      interactionStore.toggleEntity(selectedEntity.id, false, highlightOptions({ flagScale: value }));
+      interactionStore.toggleEntity(selectedEntity.id, false, highlightOptions({ uploadOffsetX: value }));
+    }
+  };
+
+  const changeUploadOffsetY = (value: number) => {
+    setHighlightUploadOffsetY(value);
+    if (animation === "highlight" && selectedEntity) {
+      interactionStore.toggleEntity(selectedEntity.id, false, highlightOptions({ uploadOffsetY: value }));
+    }
+  };
+
+  const changeUploadScale = (value: number) => {
+    setHighlightUploadScale(value);
+    if (animation === "highlight" && selectedEntity) {
+      interactionStore.toggleEntity(selectedEntity.id, false, highlightOptions({ uploadScale: value }));
     }
   };
 
@@ -386,11 +425,13 @@ export function InstructionBuilder() {
     return flagOptions.filter((option) => option.name.toLowerCase().includes(q));
   }, [flagOptions, flagQuery]);
 
-  // Position sliders only make sense once an actual image (either source)
-  // is the active fill -- otherwise there's nothing to pan.
-  const hasActiveImage =
-    (highlightImageSource === "flag" && !!highlightFlagCode) ||
-    (highlightImageSource === "upload" && !!highlightUploadedImageId);
+  // Each section's own position sliders only make sense once that
+  // section's own image is actually picked -- otherwise there's nothing to
+  // pan. Deliberately separate checks (not one shared "any image active"
+  // flag) -- the Flag Position sliders never enable just because an
+  // upload is active, and vice versa.
+  const hasActiveFlag = highlightImageSource === "flag" && !!highlightFlagCode;
+  const hasActiveUpload = highlightImageSource === "upload" && !!highlightUploadedImageId;
 
   return (
     <div className="zone">
@@ -530,6 +571,46 @@ export function InstructionBuilder() {
             )}
           </div>
           {uploadImageError && <div className="ib-upload-error">{uploadImageError}</div>}
+          <span className="ib-field-label ib-flags-label">Image Position</span>
+          <div className="ib-slider-row">
+            <span className="ib-slider-caption">Horizontal</span>
+            <input
+              type="range"
+              className="ib-slider"
+              min={-50}
+              max={50}
+              step={1}
+              value={Math.round(highlightUploadOffsetX * OFFSET_SLIDER_SCALE)}
+              onChange={(e) => changeUploadOffsetX(Number(e.target.value) / OFFSET_SLIDER_SCALE)}
+              disabled={!hasActiveUpload}
+            />
+          </div>
+          <div className="ib-slider-row">
+            <span className="ib-slider-caption">Vertical</span>
+            <input
+              type="range"
+              className="ib-slider"
+              min={-50}
+              max={50}
+              step={1}
+              value={Math.round(highlightUploadOffsetY * OFFSET_SLIDER_SCALE)}
+              onChange={(e) => changeUploadOffsetY(Number(e.target.value) / OFFSET_SLIDER_SCALE)}
+              disabled={!hasActiveUpload}
+            />
+          </div>
+          <div className="ib-slider-row">
+            <span className="ib-slider-caption">Scale</span>
+            <input
+              type="range"
+              className="ib-slider"
+              min={UPLOAD_SCALE_MIN_PERCENT}
+              max={UPLOAD_SCALE_MAX_PERCENT}
+              step={5}
+              value={Math.round(highlightUploadScale * 100)}
+              onChange={(e) => changeUploadScale(Number(e.target.value) / 100)}
+              disabled={!hasActiveUpload}
+            />
+          </div>
           <span className="ib-field-label">Highlight Color</span>
           <HexColorPicker
             className="ib-color-picker"
@@ -579,9 +660,9 @@ export function InstructionBuilder() {
               min={-50}
               max={50}
               step={1}
-              value={Math.round(highlightFlagOffsetX * FLAG_OFFSET_SLIDER_SCALE)}
-              onChange={(e) => changeFlagOffsetX(Number(e.target.value) / FLAG_OFFSET_SLIDER_SCALE)}
-              disabled={highlightFillMode !== "image" || !hasActiveImage}
+              value={Math.round(highlightFlagOffsetX * OFFSET_SLIDER_SCALE)}
+              onChange={(e) => changeFlagOffsetX(Number(e.target.value) / OFFSET_SLIDER_SCALE)}
+              disabled={!hasActiveFlag}
             />
           </div>
           <div className="ib-slider-row">
@@ -592,22 +673,9 @@ export function InstructionBuilder() {
               min={-50}
               max={50}
               step={1}
-              value={Math.round(highlightFlagOffsetY * FLAG_OFFSET_SLIDER_SCALE)}
-              onChange={(e) => changeFlagOffsetY(Number(e.target.value) / FLAG_OFFSET_SLIDER_SCALE)}
-              disabled={highlightFillMode !== "image" || !hasActiveImage}
-            />
-          </div>
-          <div className="ib-slider-row">
-            <span className="ib-slider-caption">Scale</span>
-            <input
-              type="range"
-              className="ib-slider"
-              min={FLAG_SCALE_MIN_PERCENT}
-              max={FLAG_SCALE_MAX_PERCENT}
-              step={5}
-              value={Math.round(highlightFlagScale * 100)}
-              onChange={(e) => changeFlagScale(Number(e.target.value) / 100)}
-              disabled={highlightFillMode !== "image" || !hasActiveImage}
+              value={Math.round(highlightFlagOffsetY * OFFSET_SLIDER_SCALE)}
+              onChange={(e) => changeFlagOffsetY(Number(e.target.value) / OFFSET_SLIDER_SCALE)}
+              disabled={!hasActiveFlag}
             />
           </div>
         </div>

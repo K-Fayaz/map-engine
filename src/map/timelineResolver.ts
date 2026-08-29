@@ -34,9 +34,11 @@ export interface ResolvedState {
   highlightFillMode: "color" | "image";
   highlightFlagOffsetX: number;
   highlightFlagOffsetY: number;
-  highlightFlagScale: number;
   highlightImageSource: "flag" | "upload" | null;
   highlightUploadedImageId: string | null;
+  highlightUploadOffsetX: number;
+  highlightUploadOffsetY: number;
+  highlightUploadScale: number;
 }
 
 // Sum of every scene's duration -- the export loop's `totalFrames = ceil(
@@ -111,9 +113,11 @@ interface PerSceneState {
   highlightFillMode: "color" | "image";
   highlightFlagOffsetX: number;
   highlightFlagOffsetY: number;
-  highlightFlagScale: number;
   highlightImageSource: "flag" | "upload" | null;
   highlightUploadedImageId: string | null;
+  highlightUploadOffsetX: number;
+  highlightUploadOffsetY: number;
+  highlightUploadScale: number;
 }
 
 // One O(scenes) pass building each scene's start/end camera and the
@@ -142,9 +146,11 @@ function buildPerSceneTable(
   let currentHighlightFillMode: "color" | "image" = "color";
   let currentHighlightFlagOffsetX = 0;
   let currentHighlightFlagOffsetY = 0;
-  let currentHighlightFlagScale = 1;
   let currentHighlightImageSource: "flag" | "upload" | null = null;
   let currentHighlightUploadedImageId: string | null = null;
+  let currentHighlightUploadOffsetX = 0;
+  let currentHighlightUploadOffsetY = 0;
+  let currentHighlightUploadScale = 1;
 
   for (const scene of scenes) {
     const resolvedTarget = resolveSceneTargetCamera(
@@ -189,7 +195,12 @@ function buildPerSceneTable(
             : null;
         currentHighlightUploadedImageId =
           typeof action.params.uploadedImageId === "string" ? action.params.uploadedImageId : null;
-        currentHighlightFlagScale = typeof action.params.flagScale === "number" ? action.params.flagScale : 1;
+        currentHighlightUploadOffsetX =
+          typeof action.params.uploadOffsetX === "number" ? action.params.uploadOffsetX : 0;
+        currentHighlightUploadOffsetY =
+          typeof action.params.uploadOffsetY === "number" ? action.params.uploadOffsetY : 0;
+        currentHighlightUploadScale =
+          typeof action.params.uploadScale === "number" ? action.params.uploadScale : 1;
       } else if (action.type === "clearHighlight") {
         currentHighlight = null;
         currentHighlightColor = null;
@@ -197,9 +208,11 @@ function buildPerSceneTable(
         currentHighlightFillMode = "color";
         currentHighlightFlagOffsetX = 0;
         currentHighlightFlagOffsetY = 0;
-        currentHighlightFlagScale = 1;
         currentHighlightImageSource = null;
         currentHighlightUploadedImageId = null;
+        currentHighlightUploadOffsetX = 0;
+        currentHighlightUploadOffsetY = 0;
+        currentHighlightUploadScale = 1;
       }
     }
 
@@ -214,9 +227,11 @@ function buildPerSceneTable(
       highlightFillMode: currentHighlightFillMode,
       highlightFlagOffsetX: currentHighlightFlagOffsetX,
       highlightFlagOffsetY: currentHighlightFlagOffsetY,
-      highlightFlagScale: currentHighlightFlagScale,
       highlightImageSource: currentHighlightImageSource,
       highlightUploadedImageId: currentHighlightUploadedImageId,
+      highlightUploadOffsetX: currentHighlightUploadOffsetX,
+      highlightUploadOffsetY: currentHighlightUploadOffsetY,
+      highlightUploadScale: currentHighlightUploadScale,
     });
 
     previousCamera = to;
@@ -252,9 +267,11 @@ export function resolveAt(
       highlightFillMode: "color",
       highlightFlagOffsetX: 0,
       highlightFlagOffsetY: 0,
-      highlightFlagScale: 1,
       highlightImageSource: null,
       highlightUploadedImageId: null,
+      highlightUploadOffsetX: 0,
+      highlightUploadOffsetY: 0,
+      highlightUploadScale: 1,
     };
   }
 
@@ -303,8 +320,10 @@ export function resolveAt(
     highlightFillMode: scene.highlightFillMode,
     highlightFlagOffsetX: scene.highlightFlagOffsetX,
     highlightFlagOffsetY: scene.highlightFlagOffsetY,
-    highlightFlagScale: scene.highlightFlagScale,
     highlightImageSource: scene.highlightImageSource,
     highlightUploadedImageId: scene.highlightUploadedImageId,
+    highlightUploadOffsetX: scene.highlightUploadOffsetX,
+    highlightUploadOffsetY: scene.highlightUploadOffsetY,
+    highlightUploadScale: scene.highlightUploadScale,
   };
 }
