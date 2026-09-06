@@ -2,7 +2,6 @@ import { Application, Rectangle } from "pixi.js";
 import { invoke } from "@tauri-apps/api/core";
 import { buildWorldScene, MAX_ZOOM, OCEAN_COLOR, type WorldScene } from "./worldRenderer";
 import { resolveAt, timelineDuration } from "./timelineResolver";
-import { defaultSelectionColor } from "./mapColors";
 import { loadFlagTexture } from "./flags";
 import { loadUploadedImageTexture } from "./uploadedImages";
 import type { Scene } from "./scenes";
@@ -159,18 +158,7 @@ export async function runExport(
     // at 1080x1920, which is what made this visible. Matches what
     // MapCanvas.tsx's onFocusRequest already does for the live canvas.
     const resolved = resolveAt(scenes, entities, t, scene.viewW, scene.viewH, scene.baseScaleX, scene.baseScaleY, MAX_ZOOM, cameraStart);
-    scene.drawHighlights(new Set(resolved.highlightedEntityId ? [resolved.highlightedEntityId] : []), null, {
-      color: resolved.highlightColor ?? defaultSelectionColor,
-      flagCode: resolved.highlightFlagCode,
-      fillMode: resolved.highlightFillMode,
-      flagOffsetX: resolved.highlightFlagOffsetX,
-      flagOffsetY: resolved.highlightFlagOffsetY,
-      imageSource: resolved.highlightImageSource,
-      uploadedImageId: resolved.highlightUploadedImageId,
-      uploadOffsetX: resolved.highlightUploadOffsetX,
-      uploadOffsetY: resolved.highlightUploadOffsetY,
-      uploadScale: resolved.highlightUploadScale,
-    });
+    scene.drawHighlights(resolved.highlights, null);
     scene.applyCamera(resolved.camera, showStateBorders);
     app.renderer.render(app.stage);
     const { pixels } = app.renderer.extract.pixels({

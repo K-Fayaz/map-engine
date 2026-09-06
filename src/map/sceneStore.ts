@@ -1,8 +1,10 @@
 import { create } from "zustand";
 import type { Scene } from "./scenes";
-import { sceneHighlightUploadedImageId } from "./scenes";
+import { sceneHighlightUploadedImageId, sceneHighlightAutoClear } from "./scenes";
 import { dispatchScene, resetToBaseline } from "./actionRegistry";
 import { deleteUploadedImage } from "./uploadedImages";
+import { interactionStore } from "./interactionStore";
+import { resolveHighlightsAtSceneStart } from "./timelineResolver";
 
 // If `removedScene` had an uploaded-image highlight fill, and no scene left
 // in `remainingScenes` still references that same id, deletes its app-data
@@ -114,7 +116,18 @@ export const useSceneStore = create<SceneStore>((set, get) => {
     const scene = scenes[index];
     dispatchScene(scene, isFirstDispatch ? (startFromWorldView ? "world" : "instant") : undefined);
     set({ currentSceneIndex: index, currentSceneStartedAt: Date.now() });
-    holdTimer = setTimeout(() => playFrom(index + 1), scene.duration * 1000);
+    holdTimer = setTimeout(() => {
+      // highlightAutoClear (default true): this scene's own highlight, if
+      // any, is scoped to its duration -- remove it right as playback
+      // advances past it. auto-clear off leaves it in interactionStore's
+      // playbackHighlights Map, riding forward into later scenes exactly
+      // like timelineResolver.ts's buildHighlightTimeline models it.
+      const highlightAction = scene.actions.find((action) => action.type === "highlight");
+      if (highlightAction && sceneHighlightAutoClear(scene)) {
+        interactionStore.clearPlaybackHighlight(highlightAction.params.entityId as string);
+      }
+      playFrom(index + 1);
+    }, scene.duration * 1000);
   };
 
   return {
@@ -134,6 +147,12 @@ export const useSceneStore = create<SceneStore>((set, get) => {
     // it runs off the end of the array.
     deleteScene: (id) => {
       clearHoldTimer();
+      // currentSceneIndex is unconditionally dropped to null below (same
+      // "start over" reasoning as its comment already explains), so
+      // whatever was being previewed is no longer "currently viewed" --
+      // clear playback highlights along with it rather than leaving a
+      // stale entry with no scene left to explain it.
+      interactionStore.clearAllPlaybackHighlights();
       set((state) => {
         const removedScene = state.scenes.find((scene) => scene.id === id);
         const remainingScenes = state.scenes.filter((scene) => scene.id !== id);
@@ -164,6 +183,12 @@ export const useSceneStore = create<SceneStore>((set, get) => {
       clearHoldTimer();
       const { scenes } = get();
       if (index < 0 || index >= scenes.length) return;
+      // Seed playback highlights with whatever's active at this scene's
+      // start (including anything persisting from an earlier scene with
+      // highlightAutoClear: false) *before* dispatching -- dispatchScene
+      // only ever applies scenes[index]'s own actions, so without this a
+      // cold jump would lose any highlight this scene didn't itself set.
+      interactionStore.setPlaybackHighlights(resolveHighlightsAtSceneStart(scenes, index));
       dispatchScene(scenes[index]);
       set({
         isPlaying: false,
@@ -173,13 +198,23 @@ export const useSceneStore = create<SceneStore>((set, get) => {
       });
     },
     editingSceneId: null,
-    updateScene: (id, scene) =>
-      set((state) => {
-        const oldScene = state.scenes.find((s) => s.id === id);
-        const newScenes = state.scenes.map((s) => (s.id === id ? { ...scene, id } : s));
-        cleanupOrphanedUpload(newScenes, oldScene);
-        return { scenes: newScenes, editingSceneId: null };
-      }),
+    updateScene: (id, scene) => {
+      const state = get();
+      const oldScene = state.scenes.find((s) => s.id === id);
+      const newScenes = state.scenes.map((s) => (s.id === id ? { ...scene, id } : s));
+      cleanupOrphanedUpload(newScenes, oldScene);
+      // Scene order is preserved (same index replaced in place), so if a
+      // scene is currently being previewed, reseed playback highlights at
+      // that same index against the *edited* scenes -- an in-place
+      // highlightAutoClear toggle or style change shows immediately
+      // instead of only after the next jump/play.
+      if (state.currentSceneIndex !== null) {
+        interactionStore.setPlaybackHighlights(
+          resolveHighlightsAtSceneStart(newScenes, state.currentSceneIndex),
+        );
+      }
+      set({ scenes: newScenes, editingSceneId: null });
+    },
     stopEditingScene: () => set({ editingSceneId: null }),
     currentSceneIndex: null,
     currentSceneStartedAt: null,

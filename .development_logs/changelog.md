@@ -5,6 +5,155 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-09-06 — Replaced "Clear Highlight" with per-scene auto-clear; highlights can now stack
+
+### Summary
+User wanted "Clear Highlight" gone as its own selectable animation -- it was
+easy to forget to add, and its only job was turning off whatever was
+currently highlighted. Talked through the replacement before writing any
+code (`EnterPlanMode`): a per-scene checkbox on "Highlight" itself,
+`highlightAutoClear` (default **on**), where on means the highlight is
+scoped to that scene and disappears the instant it ends (same effect
+"Clear Highlight" gave, automatic now), and off means it persists past the
+scene into later ones. Clarifying "persists" surfaced a bigger requirement
+than first assumed: off doesn't just mean "don't clear it," it means a
+*different* entity highlighted later (auto-clear on or off) must coexist
+with it, not replace it -- the existing highlight system only ever
+supported one highlighted entity at a time. Confirmed the conflict-
+resolution rule for the one remaining edge case (the *same* entity
+highlighted twice): latest write wins, full style replace, not a merge.
+
+Two Explore/Plan subagents mapped the existing pipeline read-only before
+any edits: `interactionStore.ts`'s `selectedEntityIds`/scalar fields serve
+*both* live click-to-select editing and scene playback today (`actionRegistry.ts`'s
+"highlight" handler literally calls the same `toggleEntity` a manual map
+click does); `worldRenderer.ts`'s `drawHighlights` takes one shared
+`HighlightFill` applied to every selected id; `timelineResolver.ts` (export
+and, it turned out, *not* actually used for scrubbing/jump today, only
+export) scans scenes once into ten scalar "current highlight" running
+vars, overwritten by `clearHighlight` actions. Key design call, made
+explicit before implementing: keep the click-to-select editing state
+exactly as-is and add a **new, separate** `playbackHighlights` field for
+what scene playback actually lights up, rather than repurposing
+`toggleEntity` -- upserting into a growing set there would have silently
+changed normal single-click-to-select behavior.
+
+### Changes
+
+**`src/map/scenes.ts`**
+- Removed `"clearHighlight"` from `AnimationValue`/`ANIMATION_OPTIONS` and
+  `buildScene`'s branch for it.
+- Added `highlightAutoClear: boolean = true` param to `buildScene`, carried
+  in the highlight action's `params`; new `sceneHighlightAutoClear(scene)`
+  reverse-mapping accessor (defaults `true`, matching how every
+  already-saved highlight scene used to behave before this existed).
+
+**`src/map/interactionStore.ts`**
+- New `playbackHighlights: Map<string, HighlightFill>` field, independent
+  of `selectedEntityIds`/the scalar style fields (those stay exactly what
+  they were -- manual click-to-select). New methods:
+  `setPlaybackHighlight` (upsert, latest-write-wins), `clearPlaybackHighlight`,
+  `setPlaybackHighlights` (atomic bulk replace, for jumps/scrubs),
+  `clearAllPlaybackHighlights`.
+
+**`src/map/worldRenderer.ts`**
+- `drawHighlights` now takes `ReadonlyMap<string, HighlightFill>` instead of
+  a `Set` + one shared fill -- each entity draws with its own independent
+  color/flag/upload/offsets/scale. The async texture-load retry closures
+  now recurse with `(highlights, hoveredEntityId)` instead of a single
+  snapshotted fill. `DEFAULT_HIGHLIGHT_FILL` exported for reuse instead of
+  staying file-local.
+
+**`src/map/MapCanvas.tsx`**
+- `redrawHighlights` builds the map passed to `drawHighlights`: playback
+  highlights first, then the manual selection's own fill layered on top
+  per id (a manual click while scenes are also highlighting something wins
+  for that entity).
+
+**`src/map/timelineResolver.ts`**
+- Replaced the ten scalar `currentHighlight*` vars with a running
+  `Map<string, HighlightFill>`, carried scene to scene
+  (`buildHighlightTimeline`). A `"highlight"` action upserts into it;
+  right after that scene's own snapshot is captured, any entity whose
+  highlight action has `highlightAutoClear !== false` is pruned from the
+  Map before moving to the next scene -- that single prune is the entire
+  auto-clear mechanism, and "persist until overwritten/edited" falls out
+  naturally from simply not pruning when it's off. `ResolvedState` now
+  carries `highlights: Map<string, HighlightFill>` in place of the old
+  `highlightedEntityId` + nine scalar fields. New
+  `resolveHighlightsAtSceneStart(scenes, index)` for cold jumps.
+
+**`src/map/actionRegistry.ts`**
+- `"highlight"` handler now calls `interactionStore.setPlaybackHighlight`
+  (upsert) instead of `toggleEntity` (whole-selection replace). Removed the
+  `"clearHighlight"` handler entirely. Reset baseline now also calls
+  `clearAllPlaybackHighlights()` alongside the existing manual-selection
+  reset.
+
+**`src/map/sceneStore.ts`**
+- `playFrom`'s hold-timer callback clears the ending scene's own highlight
+  (`clearPlaybackHighlight`) when its `highlightAutoClear` is on, right as
+  playback advances past it.
+- `jumpToScene` now reseeds `playbackHighlights` via
+  `resolveHighlightsAtSceneStart` *before* dispatching -- previously a cold
+  jump only ever applied the clicked scene's own actions, so a highlight
+  persisting from an earlier scene would have been invisible until Play
+  walked through it live.
+- `updateScene` reseeds the same way at the current playhead so an
+  in-place auto-clear/style edit shows immediately; `deleteScene` clears
+  all playback highlights outright, since it always resets
+  `currentSceneIndex` to `null` and there's no playhead left to reseed
+  against.
+
+**`src/map/exportPipeline.ts`**
+- `renderFrame` now passes `resolved.highlights` straight to
+  `drawHighlights` -- simpler than before, since `resolveAt` already
+  returns the right shape.
+
+**`src/map/InstructionBuilder.tsx`**
+- New checkbox under the Highlight section, "Clear highlight automatically
+  when this scene ends," bound to new `highlightAutoClear` state
+  (default `true`), wired into edit-load/`cancelEdit`/`submit`.
+
+**`src/map/timelineResolver.test.ts`**
+- Rewrote the `highlight`/`clearHighlight` describe blocks for the Map
+  shape and the new flag: auto-clear-at-scene-end (new default behavior --
+  the old "sticky across a hold/pan with no clearHighlight" test now needs
+  `highlightAutoClear: false` to get that same stickiness), latest-write-
+  wins on re-highlighting the same entity, and two different entities
+  highlighted simultaneously with independent styles.
+
+### Decisions
+- **A new, separate `playbackHighlights` field, not a repurposed
+  `toggleEntity`.** `toggleEntity`'s click-to-select semantics (replace on
+  plain click, additive on ctrl/cmd+click) are a different concern from
+  "what's lit up during playback right now" -- conflating them would have
+  silently changed ordinary map-click behavior once "highlight" needed to
+  upsert into a growing set instead of replacing it.
+- **Same entity highlighted twice: latest write wins, full replace.**
+  Confirmed with the user rather than assumed -- the alternative (merging
+  or layering two fills on identical geometry) doesn't read visually,
+  unlike two genuinely different entities coexisting.
+- **`deleteScene` clears every playback highlight, not just the deleted
+  scene's own.** `currentSceneIndex` already unconditionally resets to
+  `null` on delete (pre-existing behavior, unrelated to this session) --
+  with no playhead left, there's no principled "reseed at X" to fall back
+  to. Flagged to the user as a known, narrow side effect: deleting an
+  unrelated scene after a full playback finished with an intentional
+  persistent highlight still showing will also clear that highlight.
+
+### Deferred / not yet implemented
+- The `deleteScene` over-clearing above -- scoping it to just the deleted
+  scene's own highlighted entity (if any) instead of clearing everything --
+  was identified but not implemented this session.
+- Editing a scene's duration/`highlightAutoClear` while it is the scene
+  currently mid-hold during live Play won't retroactively affect the
+  already-scheduled timer (its callback closed over the pre-edit `Scene`
+  object) -- a narrow, pre-existing category of rough edge (no live
+  transition/hold-timer resync), not newly introduced here.
+
+---
+
 ## 2026-08-29 — Split flag vs. upload position controls; fixed a real slider regression
 
 ### Summary

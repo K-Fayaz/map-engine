@@ -62,7 +62,10 @@ export interface HighlightFill {
   uploadScale: number;
 }
 
-const DEFAULT_HIGHLIGHT_FILL: HighlightFill = {
+// Exported for reuse by anything building a HighlightFill from scratch
+// (MapCanvas.tsx's manual-selection fill, timelineResolver.ts's per-action
+// parsing) instead of re-listing every field's default inline.
+export const DEFAULT_HIGHLIGHT_FILL: HighlightFill = {
   color: defaultSelectionColor,
   flagCode: null,
   fillMode: "color",
@@ -185,11 +188,9 @@ export interface WorldScene {
   resolution: Resolution;
 
   findById(id: string | null): Entity | undefined;
-  drawHighlights(
-    selectedEntityIds: ReadonlySet<string>,
-    hoveredEntityId: string | null,
-    fill?: HighlightFill,
-  ): void;
+  // One independent HighlightFill per entity id -- no more single shared
+  // fill applied to every selected id (see the interface comment above).
+  drawHighlights(highlights: ReadonlyMap<string, HighlightFill>, hoveredEntityId: string | null): void;
   applyCamera(camera: Camera, showStateBorders: boolean): void;
   applyViewFit(screenWidth: number, screenHeight: number): void;
   // `chunked` spreads the ~241 separate Graphics.fill() calls across several
@@ -416,15 +417,13 @@ export function buildWorldScene(screenWidth: number, screenHeight: number): Worl
   highlightLayer.addChild(selectionGraphic);
   worldContainer.addChild(highlightLayer);
 
-  function drawHighlights(
-    selectedEntityIds: ReadonlySet<string>,
-    hoveredEntityId: string | null,
-    fill: HighlightFill = DEFAULT_HIGHLIGHT_FILL,
-  ) {
-    // One shared Graphics accumulates every selected entity's shape, same
-    // "many shapes, one Graphics object" approach `land` uses.
+  function drawHighlights(highlights: ReadonlyMap<string, HighlightFill>, hoveredEntityId: string | null) {
+    // One shared Graphics accumulates every highlighted entity's shape,
+    // same "many shapes, one Graphics object" approach `land` uses -- each
+    // entity now draws with its own independent fill instead of one shared
+    // one applied to every id.
     selectionGraphic.clear();
-    for (const id of selectedEntityIds) {
+    for (const [id, fill] of highlights) {
       const selected = findById(id);
       if (!selected) continue;
       // Rivers are the one selectable entity with no interior -- image fill
@@ -465,7 +464,7 @@ export function buildWorldScene(screenWidth: number, screenHeight: number): Worl
           loadUploadedImageTexture(fill.uploadedImageId!)
             .then(() => {
               if (destroyed) return;
-              drawHighlights(selectedEntityIds, hoveredEntityId, fill);
+              drawHighlights(highlights, hoveredEntityId);
             })
             .catch((err) => {
               console.error(`Failed to load uploaded highlight image ${fill.uploadedImageId}:`, err);
@@ -474,7 +473,7 @@ export function buildWorldScene(screenWidth: number, screenHeight: number): Worl
           loadFlagTexture(fill.flagCode!)
             .then(() => {
               if (destroyed) return;
-              drawHighlights(selectedEntityIds, hoveredEntityId, fill);
+              drawHighlights(highlights, hoveredEntityId);
             })
             .catch((err) => {
               console.error(`Failed to load flag texture ${fill.flagCode}:`, err);
@@ -485,7 +484,7 @@ export function buildWorldScene(screenWidth: number, screenHeight: number): Worl
     }
 
     hoverGraphic.clear();
-    if (hoveredEntityId && !selectedEntityIds.has(hoveredEntityId)) {
+    if (hoveredEntityId && !highlights.has(hoveredEntityId)) {
       const hovered = findById(hoveredEntityId);
       // Stroke only, no fill tint -- hover fires on essentially every
       // pointermove, and fillGeometry's poly-fill triggers real GPU

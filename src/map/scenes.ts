@@ -54,6 +54,19 @@ export interface Scene {
 // over-solve," that's a more advanced scripting use case (multiple
 // highlights within one already-framed shot) worth building only if real
 // use actually asks for it.
+// "Clear Highlight" existed as its own selectable animation through 6.3 --
+// a scene whose only job was turning off whatever was highlighted. Replaced
+// (this session) by a per-scene `highlightAutoClear` flag on "Highlight"
+// itself (default true: the highlight is scoped to that scene and is
+// removed the instant it ends -- the same effect a "Clear Highlight" scene
+// gave, automatic now instead of a separately authored scene). Set to
+// false, a highlight persists past its scene into later ones until either
+// the same entity is highlighted again (latest write replaces the old
+// style) or the scene is edited/deleted -- see timelineResolver.ts's
+// running highlight Map for how that's resolved. This also removes the old
+// one-highlight-at-a-time limitation: two *different* entities can now be
+// simultaneously highlighted if an earlier one's auto-clear is off when a
+// later one activates.
 // "Hold" (added after 6.1-6.3): an intentionally empty Scene -- no camera,
 // no actions -- that just occupies `duration` seconds doing nothing. Needed
 // zero changes to actionRegistry/dispatchScene/sceneStore to support: an
@@ -66,12 +79,11 @@ export interface Scene {
 // option entirely otherwise (see InstructionBuilder.tsx), rather than this
 // file trying to express "not the first scene" as part of the animation
 // vocabulary itself.
-export type AnimationValue = "pan" | "highlight" | "clearHighlight" | "hold";
+export type AnimationValue = "pan" | "highlight" | "hold";
 
 export const ANIMATION_OPTIONS: { value: AnimationValue; label: string }[] = [
   { value: "pan", label: "Pan" },
   { value: "highlight", label: "Highlight" },
-  { value: "clearHighlight", label: "Clear Highlight" },
   { value: "hold", label: "Hold" },
 ];
 
@@ -109,6 +121,7 @@ export function buildScene(
   uploadOffsetX: number = 0,
   uploadOffsetY: number = 0,
   uploadScale: number = 1,
+  highlightAutoClear: boolean = true,
 ): Scene | null {
   if (animationRequiresEntity(animation) && !entity) return null;
 
@@ -140,11 +153,9 @@ export function buildScene(
         uploadOffsetX,
         uploadOffsetY,
         uploadScale,
+        highlightAutoClear,
       },
     });
-  }
-  if (animation === "clearHighlight") {
-    actions.push({ type: "clearHighlight", params: { entityId: entity!.id } });
   }
 
   return {
@@ -175,8 +186,7 @@ export function sceneAnimationValue(scene: Scene): AnimationValue {
   // "highlight" -- there's no longer a distinct "Pan + Highlight" value it
   // could mean instead.
   if (hasHighlight) return "highlight";
-  if (scene.camera?.type === "pan") return "pan";
-  return "clearHighlight";
+  return "pan";
 }
 
 // Zoom tightness multiplier for the scene's camera pan, as a percentage --
@@ -266,6 +276,16 @@ export function sceneHighlightUploadScale(scene: Scene): number {
   const highlight = scene.actions.find((action) => action.type === "highlight");
   const value = highlight?.params.uploadScale;
   return typeof value === "number" ? value : 1;
+}
+
+// Same reverse-mapping pattern -- default `true` both for scenes saved
+// before this existed (they behaved exactly like auto-clear-on, since the
+// only way to turn a highlight off used to be a separate "Clear Highlight"
+// scene) and for any highlight action missing the field for another reason.
+export function sceneHighlightAutoClear(scene: Scene): boolean {
+  const highlight = scene.actions.find((action) => action.type === "highlight");
+  const value = highlight?.params.highlightAutoClear;
+  return value !== false;
 }
 
 export function describeAnimation(scene: Scene): string {

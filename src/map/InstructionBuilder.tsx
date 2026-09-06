@@ -18,6 +18,7 @@ import {
   sceneHighlightUploadOffsetX,
   sceneHighlightUploadOffsetY,
   sceneHighlightUploadScale,
+  sceneHighlightAutoClear,
   sceneZoomPercent,
   type AnimationValue,
 } from "./scenes";
@@ -105,6 +106,10 @@ export function InstructionBuilder() {
   // regenerated from the app-data copy on edit-load, see the effect below).
   const [highlightImageSource, setHighlightImageSource] = useState<"flag" | "upload" | null>(null);
   const [highlightUploadedImageId, setHighlightUploadedImageId] = useState<string | null>(null);
+  // Default true: the highlight is scoped to this scene, removed the
+  // instant it ends (see scenes.ts's decision comment for the full
+  // rationale -- replaces the old standalone "Clear Highlight" scene).
+  const [highlightAutoClear, setHighlightAutoClear] = useState(true);
   const [uploadedImagePreviewUrl, setUploadedImagePreviewUrl] = useState<string | null>(null);
   const [uploadImageError, setUploadImageError] = useState<string | null>(null);
 
@@ -133,6 +138,7 @@ export function InstructionBuilder() {
     setHighlightUploadOffsetX(sceneHighlightUploadOffsetX(scene));
     setHighlightUploadOffsetY(sceneHighlightUploadOffsetY(scene));
     setHighlightUploadScale(sceneHighlightUploadScale(scene));
+    setHighlightAutoClear(sceneHighlightAutoClear(scene));
     if (imageSource === "upload" && uploadedImageId) {
       // Async -- the blob URL preview isn't available until its bytes are
       // read back from the app-data copy (or it's already cached from
@@ -187,6 +193,7 @@ export function InstructionBuilder() {
       highlightUploadOffsetX,
       highlightUploadOffsetY,
       highlightUploadScale,
+      highlightAutoClear,
     );
     if (!scene) return;
     if (editingSceneId) {
@@ -218,6 +225,7 @@ export function InstructionBuilder() {
     setHighlightUploadOffsetX(0);
     setHighlightUploadOffsetY(0);
     setHighlightUploadScale(1);
+    setHighlightAutoClear(true);
   };
 
   // Same substring search interactionStore already exposes -- no new
@@ -289,11 +297,8 @@ export function InstructionBuilder() {
     setSelectedEntity(entity);
     setQuery("");
     // Every animation pans to the picked entity for visual confirmation
-    // (plan-phase6-scenes-timeline.md decision #2) -- including
-    // "clearHighlight", even though the Scene it builds won't highlight
-    // anything (it clears whatever's currently highlighted, ignoring which
-    // entity was picked -- see actionRegistry.ts's clearHighlight
-    // handler). Only "highlight" additionally shows the highlight itself.
+    // (plan-phase6-scenes-timeline.md decision #2). Only "highlight"
+    // additionally shows the highlight itself.
     interactionStore.requestFocus(entity.id, { zoomPercent });
     if (animation === "highlight") {
       interactionStore.toggleEntity(entity.id, false, highlightOptions());
@@ -558,6 +563,19 @@ export function InstructionBuilder() {
       </div>
       {animation === "highlight" && (
         <div>
+          {/* Default on: the highlight is scoped to this scene and is
+              removed the instant it ends -- turn off to have it persist
+              into later scenes (until this same entity is highlighted
+              again, or this scene is edited/deleted). See scenes.ts's
+              highlightAutoClear for the full model. */}
+          <label className="ib-checkbox-row">
+            <input
+              type="checkbox"
+              checked={highlightAutoClear}
+              onChange={(e) => setHighlightAutoClear(e.target.checked)}
+            />
+            Clear highlight automatically when this scene ends
+          </label>
           <span className="ib-field-label">Highlight Image</span>
           <div className="ib-upload-row">
             <button type="button" className="ib-upload-btn" onClick={pickUploadImage}>

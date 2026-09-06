@@ -14,7 +14,13 @@ import {
   focusOnBounds,
 } from "./camera";
 import { interactionStore } from "./interactionStore";
-import { buildWorldScene, MAX_ZOOM, STATE_ZOOM_THRESHOLD, OCEAN_COLOR } from "./worldRenderer";
+import {
+  buildWorldScene,
+  MAX_ZOOM,
+  STATE_ZOOM_THRESHOLD,
+  OCEAN_COLOR,
+  type HighlightFill,
+} from "./worldRenderer";
 import { defaultSelectionColor } from "./mapColors";
 import { placeLabelsWithoutOverlap, type LabelCandidate } from "./labelLayout";
 
@@ -403,8 +409,9 @@ export function MapCanvas() {
             selectedUploadOffsetX,
             selectedUploadOffsetY,
             selectedUploadScale,
+            playbackHighlights,
           } = interactionStore.getState();
-          scene.drawHighlights(selectedEntityIds, hoveredEntityId, {
+          const manualFill: HighlightFill = {
             color: selectedColor ?? defaultSelectionColor,
             flagCode: selectedFlagCode,
             fillMode: selectedFillMode,
@@ -415,7 +422,14 @@ export function MapCanvas() {
             uploadOffsetX: selectedUploadOffsetX,
             uploadOffsetY: selectedUploadOffsetY,
             uploadScale: selectedUploadScale,
-          });
+          };
+          // Playback-driven highlights first, then the live manual
+          // selection on top -- a manual click while scenes are also
+          // highlighting something should win for that entity, matching
+          // what the user is actively looking at/editing.
+          const highlights = new Map<string, HighlightFill>(playbackHighlights);
+          for (const id of selectedEntityIds) highlights.set(id, manualFill);
+          scene.drawHighlights(highlights, hoveredEntityId);
         };
         unsubscribeInteraction = interactionStore.subscribe(redrawHighlights);
         redrawHighlights();

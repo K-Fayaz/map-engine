@@ -8,6 +8,7 @@ import {
   type WorldBounds,
 } from "./camera";
 import type { Scene } from "./scenes";
+import { DEFAULT_HIGHLIGHT_FILL, type HighlightFill } from "./worldRenderer";
 
 // Deterministic, pure "what should the map look like at time t" resolver --
 // the `resolveAt` piece .development_logs/export.md calls for but never
@@ -25,20 +26,11 @@ import type { Scene } from "./scenes";
 
 export interface ResolvedState {
   camera: Camera;
-  highlightedEntityId: string | null;
-  // null means "use the renderer's default" -- same convention as
-  // interactionStore.ts's selectedColor, mirrored here since export never
-  // touches that store (see the file header).
-  highlightColor: number | null;
-  highlightFlagCode: string | null;
-  highlightFillMode: "color" | "image";
-  highlightFlagOffsetX: number;
-  highlightFlagOffsetY: number;
-  highlightImageSource: "flag" | "upload" | null;
-  highlightUploadedImageId: string | null;
-  highlightUploadOffsetX: number;
-  highlightUploadOffsetY: number;
-  highlightUploadScale: number;
+  // Every entity highlighted at this instant, keyed by id, each with its
+  // own independent fill -- replaces the old single highlightedEntityId +
+  // ten scalar fill fields now that highlights can stack (see scenes.ts's
+  // highlightAutoClear).
+  highlights: Map<string, HighlightFill>;
 }
 
 // Sum of every scene's duration -- the export loop's `totalFrames = ceil(
@@ -107,17 +99,85 @@ interface PerSceneState {
   duration: number;
   from: Camera;
   to: Camera;
-  highlightedEntityId: string | null;
-  highlightColor: number | null;
-  highlightFlagCode: string | null;
-  highlightFillMode: "color" | "image";
-  highlightFlagOffsetX: number;
-  highlightFlagOffsetY: number;
-  highlightImageSource: "flag" | "upload" | null;
-  highlightUploadedImageId: string | null;
-  highlightUploadOffsetX: number;
-  highlightUploadOffsetY: number;
-  highlightUploadScale: number;
+  highlights: Map<string, HighlightFill>;
+}
+
+interface HighlightTimelineEntry {
+  start: number;
+  duration: number;
+  highlights: Map<string, HighlightFill>;
+}
+
+// Parses one "highlight" action's params into a HighlightFill, same field
+// extraction scenes.ts's individual sceneHighlight* accessors each do, just
+// all at once for a single action instead of scanning `scene.actions` once
+// per field. `highlightAutoClear` isn't part of HighlightFill itself (it's
+// not a rendering concern) -- returned alongside it for the running-Map
+// scan below to consult.
+function parseHighlightAction(params: Record<string, unknown>): { fill: HighlightFill; autoClear: boolean } {
+  return {
+    fill: {
+      color: typeof params.color === "number" ? params.color : DEFAULT_HIGHLIGHT_FILL.color,
+      flagCode: typeof params.flagCode === "string" ? params.flagCode : null,
+      fillMode: params.fillMode === "image" ? "image" : "color",
+      flagOffsetX: typeof params.flagOffsetX === "number" ? params.flagOffsetX : 0,
+      flagOffsetY: typeof params.flagOffsetY === "number" ? params.flagOffsetY : 0,
+      imageSource: params.imageSource === "flag" || params.imageSource === "upload" ? params.imageSource : null,
+      uploadedImageId: typeof params.uploadedImageId === "string" ? params.uploadedImageId : null,
+      uploadOffsetX: typeof params.uploadOffsetX === "number" ? params.uploadOffsetX : 0,
+      uploadOffsetY: typeof params.uploadOffsetY === "number" ? params.uploadOffsetY : 0,
+      uploadScale: typeof params.uploadScale === "number" ? params.uploadScale : 1,
+    },
+    autoClear: params.highlightAutoClear !== false,
+  };
+}
+
+// One O(scenes) pass building each scene's active-highlight Map -- a
+// running Map carried forward scene to scene, upserted by each "highlight"
+// action (latest write wins per entity id) and pruned of any entity whose
+// highlighting scene has `highlightAutoClear` on, once that scene's own
+// snapshot has already been captured. "Persist until overwritten/edited"
+// (highlightAutoClear: false) falls out naturally from simply not pruning
+// that entry -- it keeps riding the running Map into every later scene
+// until something else touches that same id.
+// Camera-independent -- usable standalone (resolveHighlightsAtSceneStart,
+// for a cold jump/scrub) or folded into buildPerSceneTable below.
+function buildHighlightTimeline(scenes: Scene[]): HighlightTimelineEntry[] {
+  const timeline: HighlightTimelineEntry[] = [];
+  let cursor = 0;
+  let running = new Map<string, HighlightFill>();
+
+  for (const scene of scenes) {
+    const autoClearIds: string[] = [];
+    for (const action of scene.actions) {
+      if (action.type !== "highlight" || typeof action.params.entityId !== "string") continue;
+      const { fill, autoClear } = parseHighlightAction(action.params);
+      running.set(action.params.entityId, fill);
+      if (autoClear) autoClearIds.push(action.params.entityId);
+    }
+
+    timeline.push({ start: cursor, duration: scene.duration, highlights: new Map(running) });
+
+    if (autoClearIds.length > 0) {
+      running = new Map(running);
+      for (const id of autoClearIds) running.delete(id);
+    }
+
+    cursor += scene.duration;
+  }
+
+  return timeline;
+}
+
+// Looks up the highlight Map active at the *start* of scenes[index] --
+// what jumping straight to that scene (sceneStore.ts's jumpToScene) should
+// seed interactionStore.playbackHighlights with, so a cold jump correctly
+// shows any highlight still persisting from an earlier scene
+// (highlightAutoClear: false) instead of only whatever scenes[index]'s own
+// actions happen to touch.
+export function resolveHighlightsAtSceneStart(scenes: Scene[], index: number): Map<string, HighlightFill> {
+  if (index < 0 || index >= scenes.length) return new Map();
+  return buildHighlightTimeline(scenes)[index].highlights;
 }
 
 // One O(scenes) pass building each scene's start/end camera and the
@@ -140,17 +200,11 @@ function buildPerSceneTable(
   // Export is always a fresh run (never a resume), so the stale-highlight
   // reset (registerReset/resetToBaseline's unconditional toggleEntity(null))
   // always applies before scene 0 -- no resume-from-pause ambiguity here.
-  let currentHighlight: string | null = null;
-  let currentHighlightColor: number | null = null;
-  let currentHighlightFlagCode: string | null = null;
-  let currentHighlightFillMode: "color" | "image" = "color";
-  let currentHighlightFlagOffsetX = 0;
-  let currentHighlightFlagOffsetY = 0;
-  let currentHighlightImageSource: "flag" | "upload" | null = null;
-  let currentHighlightUploadedImageId: string | null = null;
-  let currentHighlightUploadOffsetX = 0;
-  let currentHighlightUploadOffsetY = 0;
-  let currentHighlightUploadScale = 1;
+  // Camera and highlights are independent concerns computed in one pass
+  // each; highlightTimeline is precomputed once and indexed alongside the
+  // per-scene camera loop below rather than recomputed inline.
+  const highlightTimeline = buildHighlightTimeline(scenes);
+  let sceneIndex = 0;
 
   for (const scene of scenes) {
     const resolvedTarget = resolveSceneTargetCamera(
@@ -179,63 +233,17 @@ function buildPerSceneTable(
           : to // "instant": scene 0 starts already at its target, no glide
         : (previousCamera as Camera);
 
-    for (const action of scene.actions) {
-      if (action.type === "highlight" && typeof action.params.entityId === "string") {
-        currentHighlight = action.params.entityId;
-        currentHighlightColor = typeof action.params.color === "number" ? action.params.color : null;
-        currentHighlightFlagCode = typeof action.params.flagCode === "string" ? action.params.flagCode : null;
-        currentHighlightFillMode = action.params.fillMode === "image" ? "image" : "color";
-        currentHighlightFlagOffsetX =
-          typeof action.params.flagOffsetX === "number" ? action.params.flagOffsetX : 0;
-        currentHighlightFlagOffsetY =
-          typeof action.params.flagOffsetY === "number" ? action.params.flagOffsetY : 0;
-        currentHighlightImageSource =
-          action.params.imageSource === "flag" || action.params.imageSource === "upload"
-            ? action.params.imageSource
-            : null;
-        currentHighlightUploadedImageId =
-          typeof action.params.uploadedImageId === "string" ? action.params.uploadedImageId : null;
-        currentHighlightUploadOffsetX =
-          typeof action.params.uploadOffsetX === "number" ? action.params.uploadOffsetX : 0;
-        currentHighlightUploadOffsetY =
-          typeof action.params.uploadOffsetY === "number" ? action.params.uploadOffsetY : 0;
-        currentHighlightUploadScale =
-          typeof action.params.uploadScale === "number" ? action.params.uploadScale : 1;
-      } else if (action.type === "clearHighlight") {
-        currentHighlight = null;
-        currentHighlightColor = null;
-        currentHighlightFlagCode = null;
-        currentHighlightFillMode = "color";
-        currentHighlightFlagOffsetX = 0;
-        currentHighlightFlagOffsetY = 0;
-        currentHighlightImageSource = null;
-        currentHighlightUploadedImageId = null;
-        currentHighlightUploadOffsetX = 0;
-        currentHighlightUploadOffsetY = 0;
-        currentHighlightUploadScale = 1;
-      }
-    }
-
     perScene.push({
       start: cursor,
       duration: scene.duration,
       from,
       to,
-      highlightedEntityId: currentHighlight,
-      highlightColor: currentHighlightColor,
-      highlightFlagCode: currentHighlightFlagCode,
-      highlightFillMode: currentHighlightFillMode,
-      highlightFlagOffsetX: currentHighlightFlagOffsetX,
-      highlightFlagOffsetY: currentHighlightFlagOffsetY,
-      highlightImageSource: currentHighlightImageSource,
-      highlightUploadedImageId: currentHighlightUploadedImageId,
-      highlightUploadOffsetX: currentHighlightUploadOffsetX,
-      highlightUploadOffsetY: currentHighlightUploadOffsetY,
-      highlightUploadScale: currentHighlightUploadScale,
+      highlights: highlightTimeline[sceneIndex].highlights,
     });
 
     previousCamera = to;
     cursor += scene.duration;
+    sceneIndex++;
   }
 
   return perScene;
@@ -261,17 +269,7 @@ export function resolveAt(
   if (scenes.length === 0) {
     return {
       camera: worldViewCamera(screenWidth, screenHeight, baseScaleX, baseScaleY, maxZoom),
-      highlightedEntityId: null,
-      highlightColor: null,
-      highlightFlagCode: null,
-      highlightFillMode: "color",
-      highlightFlagOffsetX: 0,
-      highlightFlagOffsetY: 0,
-      highlightImageSource: null,
-      highlightUploadedImageId: null,
-      highlightUploadOffsetX: 0,
-      highlightUploadOffsetY: 0,
-      highlightUploadScale: 1,
+      highlights: new Map(),
     };
   }
 
@@ -312,18 +310,5 @@ export function resolveAt(
     baseScaleY,
   );
 
-  return {
-    camera,
-    highlightedEntityId: scene.highlightedEntityId,
-    highlightColor: scene.highlightColor,
-    highlightFlagCode: scene.highlightFlagCode,
-    highlightFillMode: scene.highlightFillMode,
-    highlightFlagOffsetX: scene.highlightFlagOffsetX,
-    highlightFlagOffsetY: scene.highlightFlagOffsetY,
-    highlightImageSource: scene.highlightImageSource,
-    highlightUploadedImageId: scene.highlightUploadedImageId,
-    highlightUploadOffsetX: scene.highlightUploadOffsetX,
-    highlightUploadOffsetY: scene.highlightUploadOffsetY,
-    highlightUploadScale: scene.highlightUploadScale,
-  };
+  return { camera, highlights: scene.highlights };
 }

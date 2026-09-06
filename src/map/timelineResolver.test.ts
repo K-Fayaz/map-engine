@@ -72,22 +72,28 @@ function panScene(id: string, duration: number, targetEntityId?: string, zoomPer
   };
 }
 
-function highlightScene(id: string, duration: number, entityId: string, zoomPercent = 100): Scene {
+function highlightScene(
+  id: string,
+  duration: number,
+  entityId: string,
+  opts?: { zoomPercent?: number; autoClear?: boolean; color?: number },
+): Scene {
+  const zoomPercent = opts?.zoomPercent ?? 100;
   return {
     id,
     duration,
     targetEntityId: entityId,
-    actions: [{ type: "highlight", params: { entityId } }],
+    actions: [
+      {
+        type: "highlight",
+        params: {
+          entityId,
+          ...(opts?.color !== undefined ? { color: opts.color } : {}),
+          highlightAutoClear: opts?.autoClear ?? true,
+        },
+      },
+    ],
     camera: { type: "pan", params: { targetEntityId: entityId, zoomPercent } },
-  };
-}
-
-function clearHighlightScene(id: string, duration: number, entityId: string): Scene {
-  return {
-    id,
-    duration,
-    targetEntityId: entityId,
-    actions: [{ type: "clearHighlight", params: { entityId } }],
   };
 }
 
@@ -111,7 +117,7 @@ describe("resolveAt: empty timeline", () => {
   it("resolves to world view with no highlight", () => {
     const state = resolveAt([], [], 0, SCREEN_W, SCREEN_H, BASE_SCALE_X, BASE_SCALE_Y, MAX_ZOOM, "instant");
     expect(state.camera).toEqual(WORLD_VIEW);
-    expect(state.highlightedEntityId).toBeNull();
+    expect(state.highlights.size).toBe(0);
   });
 });
 
@@ -161,29 +167,61 @@ describe("resolveAt: single pan scene", () => {
   });
 });
 
-describe("resolveAt: highlight / clearHighlight", () => {
-  it("highlight sets highlightedEntityId and pans to the entity", () => {
+describe("resolveAt: highlight / highlightAutoClear", () => {
+  it("highlight adds the entity to the highlights map", () => {
     const entity = makeEntity("e1");
     const scenes = [highlightScene("s0", 3, "e1")];
     const state = resolve(scenes, [entity], 1);
-    expect(state.highlightedEntityId).toBe("e1");
+    expect(state.highlights.has("e1")).toBe(true);
+    expect(state.highlights.size).toBe(1);
   });
 
-  it("clearHighlight clears it and does not move the camera", () => {
+  it("auto-clear (default) removes the highlight once its own scene ends, camera unaffected", () => {
     const entity = makeEntity("e1");
-    const scenes = [highlightScene("s0", 2, "e1"), clearHighlightScene("s1", 2, "e1")];
+    const scenes = [highlightScene("s0", 2, "e1"), holdScene("s1", 2)];
     const expected = expectedEntityCamera(entity);
 
     const duringHighlight = resolve(scenes, [entity], 1);
-    expect(duringHighlight.highlightedEntityId).toBe("e1");
+    expect(duringHighlight.highlights.has("e1")).toBe(true);
 
-    const duringClear = resolve(scenes, [entity], 3);
-    expect(duringClear.highlightedEntityId).toBeNull();
-    // clearHighlight has no camera action of its own -- camera stays
-    // exactly where the highlight scene left it.
-    expect(duringClear.camera.x).toBeCloseTo(expected.x, 4);
-    expect(duringClear.camera.y).toBeCloseTo(expected.y, 4);
-    expect(duringClear.camera.zoom).toBeCloseTo(expected.zoom, 4);
+    const afterItsScene = resolve(scenes, [entity], 3);
+    expect(afterItsScene.highlights.size).toBe(0);
+    // No clear-style action touches the camera -- it stays exactly where
+    // the highlight scene left it.
+    expect(afterItsScene.camera.x).toBeCloseTo(expected.x, 4);
+    expect(afterItsScene.camera.y).toBeCloseTo(expected.y, 4);
+    expect(afterItsScene.camera.zoom).toBeCloseTo(expected.zoom, 4);
+  });
+
+  it("highlightAutoClear: false persists the highlight past its own scene", () => {
+    const entity = makeEntity("e1");
+    const scenes = [highlightScene("s0", 2, "e1", { autoClear: false }), holdScene("s1", 3)];
+    const state = resolve(scenes, [entity], 4);
+    expect(state.highlights.get("e1")).toBeDefined();
+  });
+
+  it("re-highlighting the same entity later fully replaces its style (latest write wins)", () => {
+    const e1 = makeEntity("e1");
+    const scenes = [
+      highlightScene("s0", 2, "e1", { autoClear: false, color: 0xff0000 }),
+      highlightScene("s1", 2, "e1", { autoClear: false, color: 0x00ff00 }),
+    ];
+    const state = resolve(scenes, [e1], 3);
+    expect(state.highlights.size).toBe(1);
+    expect(state.highlights.get("e1")?.color).toBe(0x00ff00);
+  });
+
+  it("two different entities stay simultaneously highlighted, each with its own style", () => {
+    const e1 = makeEntity("e1", { lon: [10, 14], lat: [10, 14] });
+    const e2 = makeEntity("e2", { lon: [40, 50], lat: [-10, 0] });
+    const scenes = [
+      highlightScene("s0", 2, "e1", { autoClear: false, color: 0xff0000 }),
+      highlightScene("s1", 2, "e2", { autoClear: false, color: 0x0000ff }),
+    ];
+    const state = resolve(scenes, [e1, e2], 3);
+    expect(state.highlights.size).toBe(2);
+    expect(state.highlights.get("e1")?.color).toBe(0xff0000);
+    expect(state.highlights.get("e2")?.color).toBe(0x0000ff);
   });
 });
 
@@ -201,11 +239,11 @@ describe("resolveAt: hold", () => {
     }
   });
 
-  it("carries the highlighted entity forward through a hold", () => {
+  it("carries a persistent (auto-clear off) highlight forward through a hold", () => {
     const entity = makeEntity("e1");
-    const scenes = [highlightScene("s0", 2, "e1"), holdScene("s1", 3)];
+    const scenes = [highlightScene("s0", 2, "e1", { autoClear: false }), holdScene("s1", 3)];
     const state = resolve(scenes, [entity], 4);
-    expect(state.highlightedEntityId).toBe("e1");
+    expect(state.highlights.has("e1")).toBe(true);
   });
 });
 
@@ -282,19 +320,26 @@ describe("resolveAt: t outside [0, totalDuration]", () => {
 });
 
 describe("resolveAt: exact scene boundary", () => {
-  it("resolves to the start of the next scene, not the end of the previous one", () => {
+  it("auto-clear (default): the highlight is gone by the start of the next scene", () => {
+    const e1 = makeEntity("e1", { lon: [10, 14], lat: [10, 14] });
+    const e2 = makeEntity("e2", { lon: [40, 50], lat: [-10, 0] });
+    const scenes = [highlightScene("s0", 2, "e1"), panScene("s1", 2, "e2")];
+    const atBoundary = resolve(scenes, [e1, e2], 2);
+    // Scene 0's highlight has highlightAutoClear: true (the default) --
+    // it's scoped to scene 0 alone, so by the instant scene 1 starts it's
+    // already gone, even though scene 1 has no highlight action of its own.
+    expect(atBoundary.highlights.size).toBe(0);
+  });
+
+  it("highlightAutoClear: false carries the highlight past the boundary into the next scene", () => {
     const e1 = makeEntity("e1", { lon: [10, 14], lat: [10, 14] });
     const e2 = makeEntity("e2", { lon: [40, 50], lat: [-10, 0] });
     // Distinct targets so a boundary landing in the wrong scene would be
     // detectable -- both scenes rest at e1's camera right at the boundary
     // (scene 1's `from` equals scene 0's `to`), so assert against that
-    // shared value plus confirm which scene's highlight is in effect.
-    const scenes = [highlightScene("s0", 2, "e1"), panScene("s1", 2, "e2")];
+    // shared value plus confirm the highlight is still in effect.
+    const scenes = [highlightScene("s0", 2, "e1", { autoClear: false }), panScene("s1", 2, "e2")];
     const atBoundary = resolve(scenes, [e1, e2], 2);
-    // Still e1's highlight from scene 0 in a naive "just past scene 0" read
-    // would be wrong -- scene 1 has no highlight action, so it should be
-    // cleared to whatever scene 1 carries forward: scene 0's highlight is
-    // sticky (scene 1 has no clearHighlight either), so it remains "e1".
-    expect(atBoundary.highlightedEntityId).toBe("e1");
+    expect(atBoundary.highlights.has("e1")).toBe(true);
   });
 });

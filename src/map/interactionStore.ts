@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 import type { Entity } from "./entities";
+import type { HighlightFill } from "./worldRenderer";
 
 // Selection/hover state, shared between MapCanvas.tsx's imperative Pixi code
 // (which reads/writes it directly, via the exported singleton, to avoid
@@ -44,6 +45,18 @@ interface InteractionState {
   selectedUploadOffsetY: number;
   selectedUploadScale: number;
   hoveredEntityId: string | null;
+  // Entities currently highlighted by *scene playback/scrub/jump*, keyed by
+  // entity id -- deliberately separate from selectedEntityIds/the scalar
+  // fields above, which stay scoped to live click-to-select editing
+  // (single click = replace, ctrl/cmd+click = additive; see toggleEntity).
+  // Repurposing toggleEntity for playback would have silently changed that
+  // editing behavior once "highlight" needed to upsert into a growing set
+  // instead of replacing it. Multiple different entities can be highlighted
+  // at once here (see scenes.ts's highlightAutoClear), each with its own
+  // independent style -- MapCanvas.tsx's redrawHighlights merges this with
+  // the manual-selection highlight (manual wins on id collision) before
+  // calling worldRenderer's drawHighlights.
+  playbackHighlights: Map<string, HighlightFill>;
   // Manual override for state (sub-country) border visibility, set from the
   // Instruction Builder. `true` (default) leaves today's behavior alone --
   // state borders still only ever appear above STATE_ZOOM_THRESHOLD.
@@ -94,6 +107,7 @@ function createInteractionStore() {
     selectedUploadOffsetY: 0,
     selectedUploadScale: 1,
     hoveredEntityId: null,
+    playbackHighlights: new Map(),
     showStateBorders: true,
   };
   const listeners = new Set<Listener>();
@@ -240,6 +254,35 @@ function createInteractionStore() {
         selectedUploadOffsetY: 0,
         selectedUploadScale: 1,
       };
+      emit();
+    },
+    // Upsert -- new params fully replace any existing entry for this
+    // entity (latest write wins), other entities' entries untouched. Used
+    // by actionRegistry.ts's "highlight" handler for live playback.
+    setPlaybackHighlight(id: string, fill: HighlightFill) {
+      const next = new Map(state.playbackHighlights);
+      next.set(id, fill);
+      state = { ...state, playbackHighlights: next };
+      emit();
+    },
+    clearPlaybackHighlight(id: string) {
+      if (!state.playbackHighlights.has(id)) return;
+      const next = new Map(state.playbackHighlights);
+      next.delete(id);
+      state = { ...state, playbackHighlights: next };
+      emit();
+    },
+    // Atomic bulk replace -- used when jumping/scrubbing to a point in the
+    // timeline whose active-highlight set needs to be resolved in one go
+    // (timelineResolver.ts's resolveHighlightsAtSceneStart), rather than
+    // reconstructed via a sequence of individual set/clear calls.
+    setPlaybackHighlights(highlights: Map<string, HighlightFill>) {
+      state = { ...state, playbackHighlights: new Map(highlights) };
+      emit();
+    },
+    clearAllPlaybackHighlights() {
+      if (state.playbackHighlights.size === 0) return;
+      state = { ...state, playbackHighlights: new Map() };
       emit();
     },
     hoverEntity(id: string | null) {

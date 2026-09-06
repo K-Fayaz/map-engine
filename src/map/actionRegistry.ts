@@ -1,4 +1,5 @@
 import { interactionStore } from "./interactionStore";
+import { defaultSelectionColor } from "./mapColors";
 import type { Scene, SceneAction, CameraAction } from "./scenes";
 
 // Phase 6 playback dispatcher (roadmap.md section 14 / 6.1.c). A lookup
@@ -13,9 +14,10 @@ import type { Scene, SceneAction, CameraAction } from "./scenes";
 // fixed-duration camera glide (camera.ts's tweenCamera, via
 // interactionStore.requestFocus's optional duration) instead of an instant/
 // interactive fly-to, so "a 2-second pan" actually takes 2 seconds rather
-// than snapping there and then holding; state handlers (highlight,
-// clearHighlight) apply instantly and ignore it, since there's nothing to
-// animate about a border appearing/disappearing. No separate
+// than snapping there and then holding; state handlers (highlight) apply
+// instantly and ignore it, since there's nothing to animate about a border
+// appearing/disappearing -- sceneStore.ts's playFrom separately uses it to
+// time a highlightAutoClear removal. No separate
 // transitionDuration/holdDuration split (roadmap.md section 16, still
 // deferred) -- one duration field, interpreted per-action-type at dispatch
 // time instead.
@@ -122,49 +124,35 @@ registerAction("pan", (params, durationSeconds, cameraStart) => {
   }
 });
 
-// "highlight": toggleEntity(id, false) is non-additive -- it deterministically
-// replaces the whole selection with just this entity, not a toggle. So at
-// most one entity is ever highlighted by scene playback at a time. Applies
-// instantly -- durationSeconds is how long it then *stays* highlighted
-// (the playback engine's hold), not something this handler animates.
+// "highlight": upserts this entity into interactionStore's playback
+// highlight Map (setPlaybackHighlight) instead of replacing the whole
+// selection -- any other entity already highlighted (from an earlier
+// scene with highlightAutoClear: false) stays put, so multiple entities
+// can be simultaneously highlighted now. Applies instantly --
+// durationSeconds is how long it then *stays* highlighted (the playback
+// engine's hold), not something this handler animates. When this scene
+// has highlightAutoClear on (the default), sceneStore.ts's playFrom is
+// responsible for removing this entity's entry once the scene's duration
+// elapses -- this handler only ever adds/updates, never removes.
 registerAction("highlight", (params, _durationSeconds, _cameraStart) => {
   const entityId = params.entityId as string;
-  const color = params.color as number | undefined;
-  const flagCode = (params.flagCode as string | null | undefined) ?? undefined;
-  const fillMode = params.fillMode as "color" | "image" | undefined;
-  const flagOffsetX = params.flagOffsetX as number | undefined;
-  const flagOffsetY = params.flagOffsetY as number | undefined;
-  const imageSource = (params.imageSource as "flag" | "upload" | null | undefined) ?? undefined;
-  const uploadedImageId = (params.uploadedImageId as string | null | undefined) ?? undefined;
-  const uploadOffsetX = params.uploadOffsetX as number | undefined;
-  const uploadOffsetY = params.uploadOffsetY as number | undefined;
-  const uploadScale = params.uploadScale as number | undefined;
-  interactionStore.toggleEntity(entityId, false, {
-    color,
-    flagCode,
-    fillMode,
-    flagOffsetX,
-    flagOffsetY,
-    imageSource,
-    uploadedImageId,
-    uploadOffsetX,
-    uploadOffsetY,
-    uploadScale,
+  interactionStore.setPlaybackHighlight(entityId, {
+    color: typeof params.color === "number" ? params.color : defaultSelectionColor,
+    flagCode: typeof params.flagCode === "string" ? params.flagCode : null,
+    fillMode: params.fillMode === "image" ? "image" : "color",
+    flagOffsetX: typeof params.flagOffsetX === "number" ? params.flagOffsetX : 0,
+    flagOffsetY: typeof params.flagOffsetY === "number" ? params.flagOffsetY : 0,
+    imageSource: params.imageSource === "flag" || params.imageSource === "upload" ? params.imageSource : null,
+    uploadedImageId: typeof params.uploadedImageId === "string" ? params.uploadedImageId : null,
+    uploadOffsetX: typeof params.uploadOffsetX === "number" ? params.uploadOffsetX : 0,
+    uploadOffsetY: typeof params.uploadOffsetY === "number" ? params.uploadOffsetY : 0,
+    uploadScale: typeof params.uploadScale === "number" ? params.uploadScale : 1,
   });
 });
 
-// "clearHighlight": clears the whole selection rather than removing only
-// params.entityId. Since "highlight" above always replaces the entire
-// selection, scene playback never has more than one entity highlighted at
-// once -- "clear this specific entity" and "clear whatever's highlighted"
-// are equivalent in practice, so this resolves the semantics 6.1.b's
-// changelog left open without needing a new interactionStore method.
-registerAction("clearHighlight", (_params, _durationSeconds, _cameraStart) => {
-  interactionStore.toggleEntity(null, false);
-});
-
-// Highlight's baseline is "nothing selected" -- the same call clearHighlight
-// makes, registered separately here since a reset must run unconditionally
-// at a fresh Play's start, regardless of whether scene 0 is a clearHighlight
-// itself.
+// Playback highlights' baseline is "nothing highlighted" -- clears the
+// whole playback Map (not the manual click-to-select state, which has its
+// own unrelated reset via toggleEntity(null, false) below) so a fresh
+// Play never inherits leftover highlights from a previous full playback.
+registerReset(() => interactionStore.clearAllPlaybackHighlights());
 registerReset(() => interactionStore.toggleEntity(null, false));
