@@ -5,6 +5,7 @@ import { dispatchScene, resetToBaseline } from "./actionRegistry";
 import { deleteUploadedImage } from "./uploadedImages";
 import { interactionStore } from "./interactionStore";
 import { resolveHighlightsAtSceneStart } from "./timelineResolver";
+import { useProjectStore } from "./projectStore";
 
 // If `removedScene` had an uploaded-image highlight fill, and no scene left
 // in `remainingScenes` still references that same id, deletes its app-data
@@ -21,7 +22,9 @@ function cleanupOrphanedUpload(remainingScenes: Scene[], removedScene: Scene | u
     (scene) => sceneHighlightUploadedImageId(scene) === uploadedImageId,
   );
   if (!stillReferenced) {
-    deleteUploadedImage(uploadedImageId).catch(() => {
+    const projectId = useProjectStore.getState().activeProjectId;
+    if (!projectId) return;
+    deleteUploadedImage(projectId, uploadedImageId).catch(() => {
       // Best-effort -- an export or another operation touching the same
       // file shouldn't be able to block scene deletion/editing.
     });

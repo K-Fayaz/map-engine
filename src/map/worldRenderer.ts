@@ -30,6 +30,7 @@ import type { Camera } from "./camera";
 import { colorForCountry, oceanColor, defaultSelectionColor } from "./mapColors";
 import { cachedFlagTexture, loadFlagTexture } from "./flags";
 import { cachedUploadedImageTexture, loadUploadedImageTexture } from "./uploadedImages";
+import { useProjectStore } from "./projectStore";
 
 // A scene highlight's fill, as resolved by whichever consumer is calling
 // drawHighlights (MapCanvas.tsx's live path, exportPipeline.ts). `fillMode`
@@ -461,14 +462,17 @@ export function buildWorldScene(screenWidth: number, screenHeight: number): Worl
         // rejection or silently retry forever; the color fallback already
         // drawn above just stays as the visible result.
         if (useUpload) {
-          loadUploadedImageTexture(fill.uploadedImageId!)
-            .then(() => {
-              if (destroyed) return;
-              drawHighlights(highlights, hoveredEntityId);
-            })
-            .catch((err) => {
-              console.error(`Failed to load uploaded highlight image ${fill.uploadedImageId}:`, err);
-            });
+          const activeProjectId = useProjectStore.getState().activeProjectId;
+          if (activeProjectId) {
+            loadUploadedImageTexture(activeProjectId, fill.uploadedImageId!)
+              .then(() => {
+                if (destroyed) return;
+                drawHighlights(highlights, hoveredEntityId);
+              })
+              .catch((err) => {
+                console.error(`Failed to load uploaded highlight image ${fill.uploadedImageId}:`, err);
+              });
+          }
         } else if (useFlag) {
           loadFlagTexture(fill.flagCode!)
             .then(() => {

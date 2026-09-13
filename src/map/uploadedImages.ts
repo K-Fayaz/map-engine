@@ -1,22 +1,27 @@
 import { Texture } from "pixi.js";
 import { open } from "@tauri-apps/plugin-dialog";
 import { mkdir, readFile, remove, writeFile, BaseDirectory } from "@tauri-apps/plugin-fs";
+import { projectAssetsDir } from "./project";
 
 // A scene highlight's "upload" image source (see scenes.ts's `imageSource`)
 // -- the user's own arbitrary image, alongside the bundled flags
 // (flags.ts). This app is fully offline (no `http` Tauri capability), so a
-// picked file is copied into an app-owned folder under $APPDATA (see
-// src-tauri/capabilities/default.json's fs:allow-appdata-*-recursive
-// grants) rather than referenced by its original path -- that path could
-// move or be deleted later, same reasoning audioStore.ts's reference audio
-// track doesn't apply to it (ffmpeg reads that one directly as an OS
-// process at export time; this one has to survive being read back into a
-// texture on every future app launch).
+// picked file is copied into the active project's own `assets/images/`
+// folder (see src-tauri/capabilities/default.json's fs:allow-appdata-*-
+// recursive grants) rather than referenced by its original path -- that
+// path could move or be deleted later, same reasoning audioStore.ts's
+// reference audio track doesn't apply to it (ffmpeg reads that one
+// directly as an OS process at export time; this one has to survive being
+// read back into a texture on every future app launch). Scoped per-project
+// (not a single global folder) so deleting a project cleanly removes its
+// own images without touching any other project's.
 
-const UPLOAD_DIR = "highlight-images";
+function uploadDir(projectId: string): string {
+  return `${projectAssetsDir(projectId)}/images`;
+}
 
-function uploadPath(id: string): string {
-  return `${UPLOAD_DIR}/${id}`;
+function uploadPath(projectId: string, id: string): string {
+  return `${uploadDir(projectId)}/${id}`;
 }
 
 // blob: URLs carry no file extension, so Pixi's Assets.load (which picks a
@@ -57,10 +62,10 @@ export function cachedUploadedImagePreviewUrl(id: string): string | undefined {
   return objectUrlCache.get(id);
 }
 
-export async function loadUploadedImagePreviewUrl(id: string): Promise<string> {
+export async function loadUploadedImagePreviewUrl(projectId: string, id: string): Promise<string> {
   const cached = objectUrlCache.get(id);
   if (cached) return cached;
-  const bytes = await readFile(uploadPath(id), { baseDir: BaseDirectory.AppData });
+  const bytes = await readFile(uploadPath(projectId, id), { baseDir: BaseDirectory.AppData });
   const objectUrl = URL.createObjectURL(new Blob([bytes], { type: mimeTypeForPath(id) }));
   objectUrlCache.set(id, objectUrl);
   return objectUrl;
@@ -68,7 +73,9 @@ export async function loadUploadedImagePreviewUrl(id: string): Promise<string> {
 
 // No file-type/size restriction (`open()` has no `filters`) -- the user's
 // explicit call. Returns null if the user cancelled the picker.
-export async function pickAndStoreUploadImage(): Promise<{ id: string; previewUrl: string } | null> {
+export async function pickAndStoreUploadImage(
+  projectId: string,
+): Promise<{ id: string; previewUrl: string } | null> {
   const path = await open({ multiple: false });
   if (!path) return null;
 
@@ -76,8 +83,8 @@ export async function pickAndStoreUploadImage(): Promise<{ id: string; previewUr
   const extension = path.split(".").pop();
   const id = extension ? `${crypto.randomUUID()}.${extension}` : crypto.randomUUID();
 
-  await mkdir(UPLOAD_DIR, { recursive: true, baseDir: BaseDirectory.AppData });
-  await writeFile(uploadPath(id), bytes, { baseDir: BaseDirectory.AppData });
+  await mkdir(uploadDir(projectId), { recursive: true, baseDir: BaseDirectory.AppData });
+  await writeFile(uploadPath(projectId, id), bytes, { baseDir: BaseDirectory.AppData });
 
   const previewUrl = URL.createObjectURL(new Blob([bytes], { type: mimeTypeForPath(path) }));
   objectUrlCache.set(id, previewUrl);
@@ -108,13 +115,13 @@ function loadImageElement(url: string): Promise<HTMLImageElement> {
   });
 }
 
-export function loadUploadedImageTexture(id: string): Promise<Texture> {
+export function loadUploadedImageTexture(projectId: string, id: string): Promise<Texture> {
   const cached = textureCache.get(id);
   if (cached) return Promise.resolve(cached);
   const inFlight = pending.get(id);
   if (inFlight) return inFlight;
 
-  const promise = loadUploadedImagePreviewUrl(id)
+  const promise = loadUploadedImagePreviewUrl(projectId, id)
     .then(loadImageElement)
     .then((image) => {
       const texture = Texture.from(image);
@@ -134,8 +141,8 @@ export function loadUploadedImageTexture(id: string): Promise<Texture> {
 
 // Called from sceneStore.ts once no remaining scene references `id` --
 // removes the app-data copy, and drops it from both in-memory caches.
-export async function deleteUploadedImage(id: string): Promise<void> {
-  await remove(uploadPath(id), { baseDir: BaseDirectory.AppData }).catch(() => {
+export async function deleteUploadedImage(projectId: string, id: string): Promise<void> {
+  await remove(uploadPath(projectId, id), { baseDir: BaseDirectory.AppData }).catch(() => {
     // Already gone (e.g. deleted in a previous session that crashed
     // mid-cleanup) -- not worth surfacing as an error to the user.
   });

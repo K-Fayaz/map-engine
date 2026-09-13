@@ -295,6 +295,33 @@ function createInteractionStore() {
       state = { ...state, showStateBorders: show };
       emit();
     },
+    // Full reset for switching projects (projectStore.ts's New/Load/Close
+    // Project) -- clears every selection/highlight-editing scalar and
+    // playback highlight back to defaults and applies the loaded project's
+    // own showStateBorders, all as one atomic emit rather than composing
+    // several of the setters above (which would each emit separately).
+    // Deliberately does NOT touch `entities` -- that's the static world
+    // dataset, loaded once at app boot, unrelated to which project is open.
+    hydrate(projectData: { showStateBorders: boolean }) {
+      state = {
+        ...state,
+        selectedEntityIds: new Set(),
+        selectedColor: null,
+        selectedFlagCode: null,
+        selectedFillMode: "color",
+        selectedFlagOffsetX: 0,
+        selectedFlagOffsetY: 0,
+        selectedImageSource: null,
+        selectedUploadedImageId: null,
+        selectedUploadOffsetX: 0,
+        selectedUploadOffsetY: 0,
+        selectedUploadScale: 1,
+        hoveredEntityId: null,
+        playbackHighlights: new Map(),
+        showStateBorders: projectData.showStateBorders,
+      };
+      emit();
+    },
     // Case-insensitive substring match over entity names, capped at `limit`.
     // No prebuilt index -- ~4850 entities is trivial to filter per keystroke.
     search(query: string, limit: number = 10): Entity[] {

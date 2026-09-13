@@ -1,10 +1,12 @@
 import { create } from "zustand";
 import { save } from "@tauri-apps/plugin-dialog";
+import { appDataDir, join } from "@tauri-apps/api/path";
 import type { Scene } from "./scenes";
 import type { Entity } from "./entities";
 import { runExport, type ExportHandle } from "./exportPipeline";
 import { interactionStore } from "./interactionStore";
 import { useAudioStore } from "./audioStore";
+import { useProjectStore } from "./projectStore";
 
 // Export's own store, separate from sceneStore/interactionStore -- same
 // reasoning sceneStore.ts already gives for being separate from
@@ -83,8 +85,17 @@ export const useExportStore = create<ExportStore>((set, get) => ({
       const profile = EXPORT_PROFILES[get().selectedProfile];
       // Same one-time-snapshot reasoning -- the audio clip loaded when
       // Export was clicked, not whatever it is if the user swaps/clears it
-      // mid-export.
-      const audioPath = useAudioStore.getState().filePath;
+      // mid-export. Audio is now stored as an assetId inside the active
+      // project's own assets/ folder (audioStore.ts), not a raw OS path --
+      // ffmpeg is an external process oblivious to Tauri's virtual
+      // BaseDirectory scoping, so a real absolute path has to be resolved
+      // here before crossing into Rust.
+      const { assetId } = useAudioStore.getState();
+      const activeProjectId = useProjectStore.getState().activeProjectId;
+      const audioPath =
+        assetId && activeProjectId
+          ? await join(await appDataDir(), "projects", activeProjectId, "assets", assetId)
+          : null;
 
       set({ status: "exporting", currentFrame: 0, totalFrames: 0, errorMessage: null });
 

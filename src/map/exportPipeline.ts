@@ -4,6 +4,7 @@ import { buildWorldScene, MAX_ZOOM, OCEAN_COLOR, type WorldScene } from "./world
 import { resolveAt, timelineDuration } from "./timelineResolver";
 import { loadFlagTexture } from "./flags";
 import { loadUploadedImageTexture } from "./uploadedImages";
+import { useProjectStore } from "./projectStore";
 import type { Scene } from "./scenes";
 import type { Entity } from "./entities";
 
@@ -141,7 +142,12 @@ export async function runExport(
 
   const { app, scene } = await buildExportRenderer(width, height);
   await Promise.all(collectFlagCodes(scenes).map(loadFlagTexture));
-  await Promise.all(collectUploadedImageIds(scenes).map(loadUploadedImageTexture));
+  const activeProjectId = useProjectStore.getState().activeProjectId;
+  if (activeProjectId) {
+    await Promise.all(
+      collectUploadedImageIds(scenes).map((id) => loadUploadedImageTexture(activeProjectId, id)),
+    );
+  }
   let cancelled = false;
 
   const renderFrame = (t: number): Uint8Array => {

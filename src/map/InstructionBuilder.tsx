@@ -31,6 +31,7 @@ import {
   loadUploadedImagePreviewUrl,
   pickAndStoreUploadImage,
 } from "./uploadedImages";
+import { useProjectStore } from "./projectStore";
 
 // Position sliders run -50..50 (full drag range, same feel as any other
 // slider) but map to a much smaller actual offset -- fillGeometryTexture's
@@ -62,6 +63,7 @@ export function InstructionBuilder() {
   const { entities, showStateBorders } = useInteractionStore();
   const selectedProfile = useExportStore((state) => state.selectedProfile);
   const setSelectedProfile = useExportStore((state) => state.setSelectedProfile);
+  const activeProjectId = useProjectStore((state) => state.activeProjectId);
   const scenes = useSceneStore((state) => state.scenes);
   const addScene = useSceneStore((state) => state.addScene);
   const editingSceneId = useSceneStore((state) => state.editingSceneId);
@@ -146,8 +148,8 @@ export function InstructionBuilder() {
       const cached = cachedUploadedImagePreviewUrl(uploadedImageId);
       if (cached) {
         setUploadedImagePreviewUrl(cached);
-      } else {
-        loadUploadedImagePreviewUrl(uploadedImageId).then(setUploadedImagePreviewUrl);
+      } else if (activeProjectId) {
+        loadUploadedImagePreviewUrl(activeProjectId, uploadedImageId).then(setUploadedImagePreviewUrl);
       }
     } else {
       setUploadedImagePreviewUrl(null);
@@ -349,9 +351,10 @@ export function InstructionBuilder() {
   // a real failure (disk full, permission denied) shouldn't surface as an
   // unhandled promise rejection with no feedback.
   const pickUploadImage = async () => {
+    if (!activeProjectId) return;
     let result;
     try {
-      result = await pickAndStoreUploadImage();
+      result = await pickAndStoreUploadImage(activeProjectId);
     } catch (err) {
       setUploadImageError(err instanceof Error ? err.message : String(err));
       return;

@@ -8,6 +8,13 @@ body,
   overflow: hidden;
 }
 
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+}
+
 .editor-layout {
   display: grid;
   grid-template-columns: 1fr 320px;
@@ -19,7 +26,11 @@ body,
     "map builder"
     "timeline builder";
   width: 100%;
-  height: 100%;
+  /* app-shell's TopBar takes its own space above -- editor-layout fills
+     whatever's left, not the full viewport height it used to have when it
+     was the only thing App.tsx rendered. */
+  flex: 1;
+  min-height: 0;
 }
 
 .editor-map {
