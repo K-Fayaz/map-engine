@@ -5,6 +5,198 @@ context. Newest entries at the top.
 
 ---
 
+## 2026-09-13 — Project management (V1 launch roadmap Phase 2): create/open/save/rename/delete
+
+### Summary
+Start of Phase 2 (v1-launch-roadmap.md) -- until now the app had zero
+persistence at all (`sceneStore.ts` literally said so in a comment); every
+session started blank and nothing survived a restart. Design was worked
+through as a discussion before any code, then formalized via `EnterPlanMode`.
+Key decisions, each confirmed via `AskUserQuestion` rather than assumed:
+projects live at `$APPDATA/projects/<generated-uuid>/` (an app-managed
+folder, not a user-chosen location) as `project.json` + an `assets/`
+subfolder, not a single bundled file; save is an explicit action (button/
+Ctrl+S), not autosave; the on-disk folder is always a generated id with the
+user-typed name stored inside the file (not the folder itself), so renaming
+is a one-field edit rather than a filesystem rename; "recent projects" comes
+from scanning `projects/*/project.json` and sorting by `updatedAt`, not a
+separate index file that could drift out of sync; delete is permanent,
+gated behind a real confirmation; `schemaVersion` is written from day one
+(cheap now, no migration logic yet, just future-proofing against a
+retrofit). The app now boots to a Home screen (New Project + a list of
+existing projects) instead of straight into the editor, with a way back to
+it from inside the editor.
+
+Two read-only Explore passes (existing-architecture, then implementation-
+pattern-level) mapped what already existed before writing anything: every
+zustand store's shape, that `Scene[]` (`scenes.ts`) is already plain
+JSON-serializable data with no live Pixi refs, and that `uploadedImages.ts`
+already established the exact pattern needed here -- copy an externally-
+picked file into an app-owned folder, reference by id, never trust the
+original OS path to still exist. Two real gaps surfaced by that
+exploration: `audioStore.ts` only ever kept a raw OS `filePath` (never
+copied anywhere, so a moved/deleted source file would silently break
+reopening), and there was no cross-store "reset everything" function
+anywhere (only `actionRegistry.ts`'s narrow `resetToBaseline`, scoped to
+playback-visual cleanup, not project switching).
+
+Once implemented (typecheck, full production build, and all 26 existing
+tests passing, plus `cargo check` on the untouched Rust side), the user
+tried it in their own already-running `tauri dev` window and found three
+real bugs missed by static verification alone, each fixed in turn:
+
+1. **The "unsaved changes" prompt never appeared, and silently saved
+   anyway.** Root cause was two-fold. First, `isDirty` tracking only
+   subscribed to `sceneStore` and `exportStore`'s `selectedProfile` --
+   editing audio or toggling `showStateBorders` (both real, persisted
+   project fields) never marked the project dirty, so the guard correctly
+   saw "nothing unsaved" and skipped the prompt. Second, and more
+   fundamentally: the prompt used `window.confirm()`, which Tauri's
+   WebKitGTK webview does not implement as a real blocking dialog -- it
+   silently resolves without ever showing anything, which is what made a
+   *fixed* dirty-tracking bug still look broken. Confirmed by the user
+   after a full dev-server restart (not just HMR) ruled out stale-module
+   explanations.
+2. **Closing the window threw `"window.destroy not allowed"` and did
+   nothing.** Registering a JS-side `onCloseRequested` listener makes
+   Tauri route the actual close through a JS `destroy()` call even when
+   `preventDefault()` is never invoked -- that needs its own explicit
+   `core:window:allow-destroy` grant, not bundled into `core:default`
+   the way the rest of this feature's fs/path calls turned out to be.
+3. **After that fix, closing showed the confirmation prompt twice.** React
+   18 StrictMode (dev only) mounts an effect, cleans it up, and mounts it
+   again -- the cleanup ran before `onCloseRequested`'s registration
+   promise had resolved, so `unlisten` was still `undefined` and the first
+   listener was never actually removed before a second one was registered
+   alongside it. Fixed with a `cleaned` flag so a late-resolving first
+   registration unregisters itself instead of leaking.
+
+### Changes
+
+**New `src/map/project.ts`** -- pure types + fs I/O, no React/zustand
+(mirrors `uploadedImages.ts` being a plain module other stores call into).
+`PROJECT_SCHEMA_VERSION`, `ProjectFile`/`ProjectAudioMeta`/`ProjectSummary`
+types, path helpers (`projectDir`/`projectFilePath`/`projectAssetsDir`), and
+`listProjectSummaries`/`readProjectFile`/`writeProjectFile`/
+`deleteProjectFolder` against `BaseDirectory.AppData`. Each project folder
+in `listProjectSummaries` is read inside its own try/catch -- one corrupt
+folder can't take down the whole Home screen list. Missing `schemaVersion`
+on read defaults to `1` rather than throwing.
+
+**New `src/map/projectStore.ts`** -- the orchestration layer reaching into
+every store that holds project-scoped data. `createProject`/`loadProject`
+build or read a `ProjectFile` then call a shared `hydrateStoresFromProject`
+(sets `sceneStore`'s `scenes`/`startFromWorldView` directly via
+`setState`, calls `interactionStore.hydrate`, resets `exportStore`,
+awaits `audioStore`'s new `hydrateFromProject` last since its copy-read is
+slower than the other three). `saveProject`/`renameProject` share a
+`gatherProjectFile` that reads all four stores' current state back into a
+`ProjectFile`. `closeProject` reuses the same hydrate path with a blank,
+never-written `ProjectFile` -- a real full cross-store reset, deliberately
+separate from `actionRegistry.ts`'s `resetToBaseline` (untouched, still
+scoped to exactly what it did before). Also exports
+`confirmLeaveWithUnsavedChanges` (see Decisions) and registers dirty-
+tracking subscriptions across all four stores at module load.
+
+**`src/map/interactionStore.ts`** -- new `hydrate({ showStateBorders })`
+method on the closure: one atomic reset of every selection/highlight-
+editing scalar and `playbackHighlights` back to defaults, applying the
+loaded project's own `showStateBorders`. Deliberately never touches
+`entities` (the static world dataset, loaded once at boot, unrelated to
+which project is open).
+
+**`src/map/audioStore.ts`** -- reworked from a raw `filePath` to an
+`assetId` (a filename inside the active project's `assets/`), copied on
+`pickAudioFile` the same way `uploadedImages.ts` already copies images
+(one slot, not many -- picking a new track deletes the previous copy
+outright, no reference counting needed). `clearAudio` now also deletes the
+on-disk copy, since there's now something app-owned to delete. New
+`hydrateFromProject(audio, projectId)` rebuilds playable state from a
+project's saved reference; a shared `decodeAudioBytes` helper avoids
+duplicating the decode-then-peaks logic between pick and hydrate.
+
+**`src/map/uploadedImages.ts`** -- rescoped from one global
+`$APPDATA/highlight-images/` folder to per-project `assets/images/`; every
+exported function gained a leading `projectId` param except the pure
+in-memory cache reads (ids are globally-unique uuids, no cross-project
+collision risk). Every call site threaded through: `InstructionBuilder.tsx`,
+`worldRenderer.ts`, `exportPipeline.ts`, and `sceneStore.ts`'s
+`cleanupOrphanedUpload` (now reads `activeProjectId` directly, same
+"import the other store directly" pattern already used for
+`interactionStore`).
+
+**`src/map/exportStore.ts`** -- `audioPath` is no longer read straight off
+`audioStore.filePath` (removed); it's now resolved via
+`appDataDir()`/`join()` from the project's copied `assetId`, since ffmpeg
+is an external OS process oblivious to Tauri's virtual `BaseDirectory`
+scoping and needs a real absolute path.
+
+**`src/App.tsx`** -- now a two-screen router (`HomeScreen` vs. the
+existing editor grid) driven by `projectStore`'s `activeProjectId`, no
+router library. Also owns the window-close guard (`onCloseRequested`,
+see Decisions/bug 3 above for the StrictMode double-listener fix).
+
+**New `src/map/HomeScreen.tsx`/`.css`** -- New Project (no naming modal --
+lands in the editor as "Untitled Project", renamed from `TopBar`), a list
+built from `listProjects()` (name, `updatedAt`), inline rename, and Delete
+gated behind the dialog plugin's `confirm()` (see Decisions).
+
+**New `src/map/TopBar.tsx`/`.css`** -- shown only when a project is open:
+inline-editable project name with a dirty dot, Save button + Ctrl/Cmd+S,
+and "← Projects" (routed through `confirmLeaveWithUnsavedChanges`).
+
+**`src-tauri/capabilities/default.json`** -- added `core:window:allow-
+destroy` (see bug 2 above). Everything else this feature needed --
+`readDir`/`readTextFile`/`mkdir`/`writeTextFile`/`remove` under AppData,
+and `appDataDir()`/`join()` from `@tauri-apps/api/path` -- was already
+covered by the existing `fs:allow-appdata-*-recursive` grants and
+`core:default`'s bundled `core:path:default`, confirmed by reading the
+actual vendored permission tomls rather than assuming.
+
+### Decisions
+- **App-managed project folders (generated uuid names), not user-chosen
+  locations or human-readable folder names.** Confirmed via
+  `AskUserQuestion`; can revisit later per the user's own "we can update it
+  later if I don't like it."
+- **Explicit Save, no autosave.** User's explicit choice when asked;
+  autosave was raised again later in the same session but not implemented
+  (see Deferred).
+- **`window.confirm()` is unusable in this app's webview -- every
+  confirmation dialog must use `@tauri-apps/plugin-dialog`'s `confirm()`
+  instead.** Discovered as a real bug, not assumed: `window.confirm`
+  silently resolves without ever showing a dialog in Tauri's WebKitGTK
+  webview, which made both the unsaved-changes guard and (retroactively)
+  `HomeScreen.tsx`'s original Delete confirmation non-functional. Both
+  fixed to use the dialog plugin's `confirm()`, which is already covered
+  by the existing `dialog:default` capability (`ask`/`confirm` are aliases
+  for the already-granted `message` command -- confirmed by reading the
+  plugin's own permission tomls, not assumed).
+- **Dirty tracking must cover every field `gatherProjectFile` actually
+  persists, not just the two that were obvious at plan time.** The initial
+  implementation missed `interactionStore.showStateBorders` and
+  `audioStore` changes entirely -- a real gap the user caught by testing,
+  not a hypothetical.
+
+### Deferred / not yet implemented
+- **Autosave every 1 minute.** Raised by the user mid-session as a
+  follow-up to explicit Save, but the request was interrupted before
+  requirements (alongside explicit Save vs. replacing it; only-when-dirty
+  vs. unconditional) were pinned down, and the conversation moved on to
+  other questions before it was implemented. Explicit Save/Ctrl+S remains
+  the only save path for now.
+- No systematic audit of every other place in the codebase that might
+  still use `window.confirm`/`window.alert`/`window.prompt` -- only the
+  two call sites this feature touched (the unsaved-changes guard, Delete
+  Project) were found and fixed. Worth a dedicated grep pass later.
+- Uploaded-image orphan leak for a never-added/removed-before-adding
+  preview (logged in the 2026-08-29 entry below) is now also true per-
+  project rather than globally, but the underlying gap itself is
+  unchanged/still open.
+- No production installer/auto-update/accounts/payments/landing page work
+  yet -- this entry covers only Phase 2 of the roadmap's seven phases.
+
+---
+
 ## 2026-09-06 — Replaced "Clear Highlight" with per-scene auto-clear; highlights can now stack
 
 ### Summary
